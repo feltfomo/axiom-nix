@@ -1,6 +1,6 @@
 { lib }:
 let
-  axiom = import ../default.nix { inherit lib; };
+  axiom = import ../src { inherit lib; };
   inherit (axiom)
     validation
     schema
