@@ -20,7 +20,10 @@
 
       # axiom takes a lib and hands back attrs, so consumers apply it against
       # their own lib instead of reading a per-system output.
-      flake.lib.axiom = import ./src;
+      flake.lib = {
+        axiom = import ./src;
+        axiomLanguage = import ./language;
+      };
 
       perSystem =
         { pkgs, ... }:
@@ -28,11 +31,22 @@
           treefmt = import ./formatter.nix;
 
           # the suite throws on the first failing case, so evaluating .ok is the
-          # whole check and the assert keeps that throw at build time.
-          checks.tests = pkgs.runCommandLocal "axiom-tests" { } (
-            assert (import ./tests { inherit (pkgs) lib; }).ok;
-            "touch $out"
-          );
+          # complete check and the assert keeps that throw at build time.
+          checks = {
+            tests = pkgs.runCommandLocal "axiom-tests" { } (
+              assert (import ./tests { inherit (pkgs) lib; }).ok;
+              "touch $out"
+            );
+
+            axiom-language = pkgs.runCommandLocal "axiom-language-tests" { } (
+              assert
+                (import ./language-tests {
+                  inherit inputs;
+                  inherit (pkgs) lib;
+                }).ok;
+              "touch $out"
+            );
+          };
 
           devShells.default = pkgs.mkShell {
             packages = [
