@@ -7,7 +7,11 @@ Axiom is for library and subsystem maintainers. It does not define user-facing e
 ## Import
 
 ```nix
-axiom = import ./modules/_lib/axiom { inherit lib; };
+# from the flake input, which is how a consumer reaches it
+axiom = inputs.axiom.lib.axiom { inherit lib; };
+
+# or directly, from a checkout of this repo
+axiom = import ./src { inherit lib; };
 ```
 
 The import returns eight modules:
@@ -256,7 +260,6 @@ See [Laws and laziness](laws-and-laziness.md) before adding validators around de
 ## Verification
 
 ```fish
-nix build .#checks.x86_64-linux.axiom -L
 nix fmt
 nix flake check -L
 ```

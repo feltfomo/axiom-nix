@@ -3,7 +3,7 @@
 Import the library once:
 
 ```nix
-axiom = import ./modules/_lib/axiom { inherit lib; };
+axiom = inputs.axiom.lib.axiom { inherit lib; };
 ```
 
 All functions are curried Nix functions unless an attrset argument is shown.
