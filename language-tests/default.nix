@@ -21,6 +21,7 @@ let
   flakeLanguage = inputs.self.lib.axiomLanguage;
   hostBoundary = import ./host-boundary { language = directLanguage; };
   coreSyntax = import ./core-syntax { language = directLanguage; };
+  evaluation = import ./evaluation { language = directLanguage; };
 
   isolatedLegacyRoot = builtins.path {
     path = ../src;
@@ -94,6 +95,7 @@ let
     ordinaryLegacy = (import ../tests { inherit lib; }).ok;
     hostBoundary = hostBoundary.ok;
     coreSyntax = coreSyntax.ok;
+    evaluation = evaluation.ok;
     newLineIndependent =
       directLanguage.generation == "axiom-language-1" && flakeLanguage.generation == "axiom-language-1";
     directLegacySurface = namesOf directLegacy == frozenLegacyNames;
