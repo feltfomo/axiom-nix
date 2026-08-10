@@ -626,6 +626,7 @@ let
         builtins.attrNames language == [
           "boundary"
           "generation"
+          "syntax"
         ]
         &&
           builtins.attrNames boundary == [

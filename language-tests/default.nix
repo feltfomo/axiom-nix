@@ -20,6 +20,7 @@ let
   directLanguage = import ../language;
   flakeLanguage = inputs.self.lib.axiomLanguage;
   hostBoundary = import ./host-boundary { language = directLanguage; };
+  coreSyntax = import ./core-syntax { language = directLanguage; };
 
   isolatedLegacyRoot = builtins.path {
     path = ../src;
@@ -92,12 +93,44 @@ let
   evidence = {
     ordinaryLegacy = (import ../tests { inherit lib; }).ok;
     hostBoundary = hostBoundary.ok;
+    coreSyntax = coreSyntax.ok;
     newLineIndependent =
       directLanguage.generation == "axiom-language-1" && flakeLanguage.generation == "axiom-language-1";
     directLegacySurface = namesOf directLegacy == frozenLegacyNames;
     flakeLegacySurface = namesOf flakeLegacy == frozenLegacyNames;
     isolatedLegacyProduction = namesOf isolatedLegacy == frozenLegacyNames;
-    isolatedLanguageProduction = isolatedLanguage.generation == "axiom-language-1";
+    isolatedLanguageProduction =
+      builtins.attrNames isolatedLanguage == [
+        "boundary"
+        "generation"
+        "syntax"
+      ];
+    publicLanguageSurface =
+      builtins.attrNames directLanguage == [
+        "boundary"
+        "generation"
+        "syntax"
+      ];
+    publicSyntaxSurface =
+      builtins.attrNames directLanguage.syntax == [
+        "generation"
+        "limits"
+        "validate"
+      ];
+    noPublicCoreAuthority =
+      builtins.all
+        (name: !(builtins.hasAttr name directLanguage) && !(builtins.hasAttr name directLanguage.syntax))
+        [
+          "admitted"
+          "checked"
+          "constructors"
+          "core"
+          "evaluate"
+          "infer"
+          "proof"
+          "term"
+          "type"
+        ];
     newToLegacyControl = newToLegacyControl == "legacy-sentinel";
     newToLegacyRejected = !newToLegacyIsolated.success;
     legacyToNewControl = legacyToNewControl == "language-sentinel";
