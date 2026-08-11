@@ -24,6 +24,7 @@ let
   evaluation = import ./evaluation { language = directLanguage; };
   levels = import ./levels { core = import ../language/core; };
   ruleFamilies = import ./rule-families { core = import ../language/core; };
+  kernel = import ./kernel { language = directLanguage; };
 
   isolatedLegacyRoot = builtins.path {
     path = ../src;
@@ -100,6 +101,7 @@ let
     evaluation = evaluation.ok;
     levels = levels.ok;
     ruleFamilies = ruleFamilies.ok;
+    kernel = kernel.ok;
     newLineIndependent =
       directLanguage.generation == "axiom-language-1" && flakeLanguage.generation == "axiom-language-1";
     directLegacySurface = namesOf directLegacy == frozenLegacyNames;

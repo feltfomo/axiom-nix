@@ -1,4 +1,16 @@
 let
+  ownership = {
+    syntax = "core syntax";
+    scope = "core operations";
+    levels = "level normalization";
+    evaluation = "weak-head evaluation";
+    formation = "private kernel";
+    checking = "private kernel";
+    conversion = "private kernel";
+    quotation = "private kernel";
+    readback = "private kernel";
+    lawEvidence = "language test gate";
+  };
   row =
     syntax: formation: introduction: elimination: computation: equality: etaStatus: semantics: diagnostics: laws: {
       inherit
@@ -12,22 +24,8 @@ let
         semantics
         diagnostics
         laws
+        ownership
         ;
-      algorithms = {
-        now = [
-          "syntax"
-          "scope"
-          "levels"
-          "evaluation"
-          "law evidence"
-        ];
-        later = [
-          "checking"
-          "conversion"
-          "quotation"
-          "readback"
-        ];
-      };
     };
 in
 {
@@ -44,23 +42,25 @@ in
     row [ "pi" "lambda" "application" ] "max domain family" [ "lambda" ] [ "application" ]
       [ "beta" ]
       [ "congruence" ]
-      "candidate reserved"
+      "extensional eta"
       [ "pi value" "closure" "neutral application" ]
       "dependent function"
       [
         "binder laws"
         "beta"
+        "eta"
       ];
   sigma =
     row [ "sigma" "pair" "first-projection" "second-projection" ] "max domain family"
       [ "pair" ]
       [ "first projection" "second projection" ] [ "projection" ] [ "congruence" ]
-      "candidate reserved"
+      "surjective-pair eta"
       [ "sigma value" "pair" "neutral projections" ]
       "dependent pair"
       [
         "binder laws"
         "projection"
+        "eta"
       ];
   sum =
     row [ "sum-type" "left-injection" "right-injection" "sum-elimination" ] "max components"
@@ -72,17 +72,19 @@ in
       [
         "branch computation"
         "inactive motive"
+        "no eta"
       ];
   unit =
     row [ "unit-type" "unit" "unit-elimination" ] "U zero" [ "unit" ] [ "dependent unit elimination" ]
       [ "unit case" ]
       [ "congruence" ]
-      "uniqueness candidate reserved"
+      "typed uniqueness"
       [ "unit type" "unit" "neutral elimination" ]
       "unit"
       [
         "sole introduction"
         "inactive motive"
+        "uniqueness"
       ];
   empty =
     row [ "empty-type" "empty-elimination" ] "U zero" [ ] [ "dependent empty elimination" ]
@@ -91,7 +93,10 @@ in
       "none"
       [ "empty type" "neutral elimination" ]
       "empty"
-      [ "no introduction" ];
+      [
+        "no introduction"
+        "no eta"
+      ];
   identity =
     (row [ "identity-type" "refl" "identity-elimination" ] "carrier level" [ "refl" ] [ "general J" ]
       [ "J on refl" ]
@@ -102,6 +107,7 @@ in
       [
         "general J binder order"
         "no equality reflection"
+        "no eta"
       ]
     )
     // {
