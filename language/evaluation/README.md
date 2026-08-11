@@ -1,42 +1,18 @@
 # Evaluation engine
 
-This private subsystem gives operational meaning to admitted variable, lambda, application, and annotation syntax. It doesn't form types, check terms, normalize, quote values, define conversion, execute host callbacks, or expose evaluator authority through `language/default.nix`.
+This private subsystem gives weak-head call-by-name meaning to the complete admitted core syntax. It doesn't form or check types, define conversion, quote values, execute host callbacks, or expose evaluator authority through `language/default.nix`.
 
-The public language attrset exposes no evaluation authority. Supported internal callers pass private envelopes, and evaluator entry points re-admit them before semantic dispatch. Importing an internal module directly does not turn matching records into public trusted evidence.
+Evaluation generation `axiom-evaluation-2` stamps environments, cells, closures, values, and neutral spine items. A demanded record's stamp is checked before its variant payload. Inactive domains, families, motives, branches, pair components, injection payloads, identity endpoints, and unrelated environment cells aren't recursively validated or forced.
 
-The direct evaluator is a small recursive statement of the equations. It is an oracle for bounded terms, not the deep-stack implementation. The machine uses `genericClosure` with `eval` and `return` control plus one `apply-operator` frame. Its state owns semantic-node count, semantic depth, transition fuel, trace, terminal value, and structured failure.
+Pi and sigma values carry an inactive domain cell and codomain closure. Sum types carry inactive component cells. Pairs, injections, and refl carry thunks. Identity types carry inactive carrier and endpoint cells. Universes carry normalized dedicated level syntax.
 
-Evaluation is call by name. Application evaluates the operator and stores the operand as a syntax/environment thunk. A closure extends its captured environment with that thunk. Variable lookup forces a thunk when its absolute level is demanded, without updating or memoizing the cell. Neutral application appends the untouched thunk to its elimination spine.
+Eliminators evaluate only their scrutinee. Projections demand one selected pair cell. Sum elimination evaluates one selected branch. Unit evaluates its case. Empty has no canonical branch. J on refl applies the one-binder refl branch to the stored witness. Motives stay inactive.
 
-An environment carries `nextLevel` and cells addressed by decimal absolute-level keys. Exact-key lookup doesn't traverse a positional spine. Extension doesn't derive meaning from key order. `hasAttr` distinguishes a missing level from a present lazy cell without forcing the cell. Decimal key spelling is representation, not semantic ordering.
+Open eliminations extend a neutral spine. Items are stored newest-first with an explicit checked count, then reversed once by bounded projection support. Spine items cover application, both projections, sum, unit, empty, and identity elimination.
 
-A semantic value is a closure or neutral. A closure carries a validated body and creation environment. A neutral carries an absolute-level head and ordered elimination spine. An environment cell is either a semantic value or an unevaluated term with its environment.
+The direct evaluator states the equations recursively. The first-order machine uses eval and return control with apply, projection, sum, unit, empty, and identity frames. Sum and J frames retain raw inactive syntax and its environment until the scrutinee chooses a canonical or neutral path.
 
-Success includes open neutrals. Resource exhaustion distinguishes nodes, depth, and fuel. Internal failures use stable codes:
-
-- `AXIOM-EVAL-001` means an environment lacked the requested level
-- `AXIOM-EVAL-002` means validated syntax reached an unknown constructor
-- `AXIOM-EVAL-003` means application received neither closure nor neutral
-- `AXIOM-EVAL-004` means machine control, frame, or terminal state was impossible
-- `AXIOM-EVAL-005` means lookup found an unknown environment-cell variant
-- `AXIOM-EVAL-006` means a private semantic value came from a missing or stale evaluation generation
-
-The defaults are 256 semantic nodes, depth 64 from root depth zero, and 4096 machine transitions. Node and depth limits are checked before the next term is inspected. A successful dispatch charges one node. Annotation erases its second child without a charge or event. Fuel is checked before each machine transition, and refusal reports the count before the refused operation. Syntax admission and evaluation keep separate budgets even where defaults match.
-
-Trace events are prepended during evaluation and reversed once at the result boundary. Semantic events cover charge, lookup, force, closure creation, closure application, neutral application, and annotation erasure. Machine control and frame traffic aren't semantic events.
-
-`projection.nix` is bounded test support. It may traverse complete closure environments by explicit recorded levels, so it isn't used for forcing claims. Evaluation never calls it. Its closed primitive output and host equality support implementation tests only; they don't define conversion or semantic equality.
-
-Dependencies point from this subsystem into the private core representation and admission operations. Core, syntax, boundary policy, legacy `src/`, and the public facade don't import evaluation.
-
-Change impact:
-
-- a syntax constructor changes both evaluator dispatches, traces, generated agreement tests, and this contract
-- a cell or value representation changes lookup, closure application, neutral spines, projection, poison gates, and internal-state fixtures
-- a forcing change touches both equations, duplicated-thunk tests, inactive-operand gates, traces, and resource accounting
-- a resource change touches charge sites, exact and one-over tests, deep-machine tests, and this contract
-- a trace change touches both evaluators, projection, deterministic event tests, and equivalence gates
-- an internal-state change touches its exact `AXIOM-EVAL-*` code and focused private fixture
+Defaults remain 256 semantic nodes, depth 64, and 4096 transitions. Node and depth refusal precedes term inspection. Fuel refusal precedes machine control or frame advancement. Incompatible canonical eliminations are internal semantic-state failures because this subsystem assumes, but doesn't establish, the relevant type invariant.
 
 Permanent gates from the repository root:
 

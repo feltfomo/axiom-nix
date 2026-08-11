@@ -1,21 +1,121 @@
-{ representation }:
+{ representation, levels }:
 let
   inherit (representation) limits;
   exact = names: value: builtins.isAttrs value && builtins.attrNames value == names;
-  reverse = builtins.foldl' (values: value: [ value ] ++ values) [ ];
+  reverse = builtins.foldl' (xs: x: [ x ] ++ xs) [ ];
   failure = kind: path: detail: {
     ok = false;
     inherit kind path detail;
   };
-
-  finish =
-    state:
-    state
-    // {
-      jobs = [ ];
-      status = "done";
-    };
-
+  child = job: field: scope: {
+    action = "visit";
+    node = job.node.${field};
+    inherit scope;
+    depth = job.depth + 1;
+    path = job.path ++ [ field ];
+  };
+  # child scopes carry absolute binder starts rather than an index-relative depth
+  spec =
+    job:
+    let
+      n = job.node;
+      s = job.scope;
+      plain = field: child job field s;
+      bound = field: count: child job field (s + count);
+      shape = names: children: {
+        ok = exact names n;
+        inherit children;
+      };
+    in
+    if n.kind == "lambda" then
+      shape [ "body" "kind" ] [ (bound "body" 1) ]
+    else if n.kind == "application" then
+      shape [ "argument" "function" "kind" ] [ (plain "function") (plain "argument") ]
+    else if n.kind == "annotation" then
+      shape [ "annotation" "kind" "subject" ] [ (plain "subject") (plain "annotation") ]
+    else if n.kind == "pi" then
+      shape [ "codomain" "domain" "kind" ] [ (plain "domain") (bound "codomain" 1) ]
+    else if n.kind == "sigma" then
+      shape [ "codomain" "domain" "kind" ] [ (plain "domain") (bound "codomain" 1) ]
+    else if n.kind == "sum-type" then
+      shape [ "kind" "left" "right" ] [ (plain "left") (plain "right") ]
+    else if n.kind == "pair" then
+      shape [ "first" "kind" "second" ] [ (plain "first") (plain "second") ]
+    else if n.kind == "first-projection" then
+      shape [ "kind" "pair" ] [ (plain "pair") ]
+    else if n.kind == "second-projection" then
+      shape [ "kind" "pair" ] [ (plain "pair") ]
+    else if n.kind == "left-injection" then
+      shape [ "kind" "value" ] [ (plain "value") ]
+    else if n.kind == "right-injection" then
+      shape [ "kind" "value" ] [ (plain "value") ]
+    # sum motive and branches bind separate witnesses at the same absolute level
+    else if n.kind == "sum-elimination" then
+      shape
+        [ "kind" "leftBranch" "motive" "rightBranch" "scrutinee" ]
+        [ (plain "scrutinee") (bound "motive" 1) (bound "leftBranch" 1) (bound "rightBranch" 1) ]
+    else if n.kind == "unit-elimination" then
+      shape
+        [ "case" "kind" "motive" "scrutinee" ]
+        [ (plain "scrutinee") (bound "motive" 1) (plain "case") ]
+    else if n.kind == "empty-elimination" then
+      shape [ "kind" "motive" "scrutinee" ] [ (plain "scrutinee") (bound "motive" 1) ]
+    else if n.kind == "identity-type" then
+      shape [ "carrier" "kind" "left" "right" ] [ (plain "carrier") (plain "left") (plain "right") ]
+    else if n.kind == "refl" then
+      shape [ "kind" "value" ] [ (plain "value") ]
+    # source target and evidence occupy consecutive levels while the refl branch binds only source
+    else if n.kind == "identity-elimination" then
+      shape
+        [ "kind" "motive" "reflBranch" "scrutinee" ]
+        [ (plain "scrutinee") (bound "motive" 3) (bound "reflBranch" 1) ]
+    else
+      {
+        ok = false;
+        children = [ ];
+      };
+  build =
+    kind: values:
+    let
+      ordered = reverse values;
+      at = i: builtins.elemAt ordered i;
+    in
+    if kind == "lambda" then
+      representation.lambda (at 0)
+    else if kind == "application" then
+      representation.application (at 0) (at 1)
+    else if kind == "annotation" then
+      representation.annotation (at 0) (at 1)
+    else if kind == "pi" then
+      representation.pi (at 0) (at 1)
+    else if kind == "sigma" then
+      representation.sigma (at 0) (at 1)
+    else if kind == "sum-type" then
+      representation.sumType (at 0) (at 1)
+    else if kind == "pair" then
+      representation.pair (at 0) (at 1)
+    else if kind == "first-projection" then
+      representation.firstProjection (at 0)
+    else if kind == "second-projection" then
+      representation.secondProjection (at 0)
+    else if kind == "left-injection" then
+      representation.leftInjection (at 0)
+    else if kind == "right-injection" then
+      representation.rightInjection (at 0)
+    else if kind == "sum-elimination" then
+      representation.sumElimination (at 0) (at 1) (at 2) (at 3)
+    else if kind == "unit-elimination" then
+      representation.unitElimination (at 0) (at 1) (at 2)
+    else if kind == "empty-elimination" then
+      representation.emptyElimination (at 0) (at 1)
+    else if kind == "identity-type" then
+      representation.identityType (at 0) (at 1) (at 2)
+    else if kind == "refl" then
+      representation.refl (at 0)
+    else if kind == "identity-elimination" then
+      representation.identityElimination (at 0) (at 1) (at 2)
+    else
+      null;
   advance =
     onVariable: state:
     if state.status != "running" || state.jobs == [ ] then
@@ -24,268 +124,170 @@ let
       let
         job = builtins.head state.jobs;
         rest = builtins.tail state.jobs;
-        nextKey = state.key + 1;
-        next = value: state // value // { key = nextKey; };
+        next = update: [ (state // update // { key = state.key + 1; }) ];
+        stop =
+          result:
+          next {
+            status = "done";
+            jobs = [ ];
+            inherit result;
+          };
       in
-      # build jobs consume child values in reverse visit order
-      # so parent reconstruction stays iterative
-      if job.action == "build-lambda" then
+      if job.action == "build" then
         let
-          body = builtins.head state.values;
-          values = [ (representation.lambda body) ] ++ builtins.tail state.values;
+          selected = builtins.genList (i: builtins.elemAt state.values i) job.count;
+          remaining = builtins.genList (i: builtins.elemAt state.values (i + job.count)) (
+            builtins.length state.values - job.count
+          );
+          value = build job.kind selected;
         in
-        [
-          (next {
-            inherit values;
+        if value == null then
+          stop (failure "internal-bug" job.path "build")
+        else
+          next {
             jobs = rest;
+            values = [ value ] ++ remaining;
             status = if rest == [ ] then "done" else "running";
-          })
-        ]
-      else if job.action == "build-application" then
-        let
-          argument = builtins.head state.values;
-          function = builtins.head (builtins.tail state.values);
-          values = [
-            (representation.application function argument)
-          ]
-          ++ builtins.tail (builtins.tail state.values);
-        in
-        [
-          (next {
-            inherit values;
-            jobs = rest;
-            status = if rest == [ ] then "done" else "running";
-          })
-        ]
-      else if job.action == "build-annotation" then
-        let
-          annotation = builtins.head state.values;
-          subject = builtins.head (builtins.tail state.values);
-          values = [
-            (representation.annotation subject annotation)
-          ]
-          ++ builtins.tail (builtins.tail state.values);
-        in
-        [
-          (next {
-            inherit values;
-            jobs = rest;
-            status = if rest == [ ] then "done" else "running";
-          })
-        ]
+          }
       else if job.depth > limits.depth then
-        [
-          (finish (next {
-            result = failure "resource-exhaustion" job.path "depth";
-          }))
-        ]
+        stop (failure "resource-exhaustion" job.path "depth")
       else if state.consumed >= limits.nodes then
-        [
-          (finish (next {
-            result = failure "resource-exhaustion" job.path "nodes";
-          }))
-        ]
+        stop (failure "resource-exhaustion" job.path "nodes")
       else
         let
           consumed = state.consumed + 1;
           outer = builtins.tryEval (builtins.typeOf job.node);
         in
         if !outer.success then
-          [
-            (finish (next {
-              inherit consumed;
-              result = failure "host-failure" job.path "node-outer";
-            }))
-          ]
+          stop (failure "host-failure" job.path "node-outer")
         else if outer.value != "set" then
-          [
-            (finish (next {
-              inherit consumed;
-              result = failure "boundary-mismatch" job.path "node-${outer.value}";
-            }))
-          ]
+          stop (failure "boundary-mismatch" job.path "node")
         else
           let
-            inspected = builtins.tryEval (
-              let
-                names = builtins.attrNames job.node;
-                kind = job.node.kind;
-              in
-              builtins.seq names (builtins.seq kind { inherit names kind; })
-            );
+            inspected = builtins.tryEval {
+              names = builtins.attrNames job.node;
+              kind = job.node.kind;
+            };
           in
           if !inspected.success then
-            [
-              (finish (next {
-                inherit consumed;
-                result = failure "host-failure" job.path "node-control";
-              }))
-            ]
+            stop (failure "host-failure" job.path "node-control")
           else if inspected.value.kind == "variable" then
             let
-              checked = builtins.tryEval (
+              valid =
                 exact [ "kind" "level" ] job.node
                 && builtins.isInt job.node.level
                 && job.node.level >= 0
-                && job.node.level < job.scope
-              );
+                && job.node.level < job.scope;
+              mapped =
+                if valid then
+                  builtins.tryEval (onVariable {
+                    inherit (job)
+                      node
+                      scope
+                      depth
+                      path
+                      ;
+                  })
+                else
+                  {
+                    success = true;
+                    value = null;
+                  };
             in
-            if !checked.success then
-              [
-                (finish (next {
-                  inherit consumed;
-                  result = failure "host-failure" job.path "variable-control";
-                }))
-              ]
-            else if !checked.value then
-              [
-                (finish (next {
-                  inherit consumed;
-                  result = failure "boundary-mismatch" job.path "variable";
-                }))
-              ]
+            if !valid then
+              stop (failure "boundary-mismatch" job.path "variable")
+            else if !mapped.success then
+              stop (failure "internal-bug" job.path "variable-map")
+            else
+              next {
+                inherit consumed;
+                jobs = rest;
+                values = [ mapped.value ] ++ state.values;
+                paths = [ job.path ] ++ state.paths;
+                variables = [
+                  {
+                    inherit (job) path;
+                    inherit (job.node) level;
+                  }
+                ]
+                ++ state.variables;
+                status = if rest == [ ] then "done" else "running";
+              }
+          else if inspected.value.kind == "universe" then
+            if !exact [ "kind" "level" ] job.node then
+              stop (failure "boundary-mismatch" job.path "universe")
             else
               let
-                mapped = builtins.tryEval (onVariable {
-                  inherit (job)
-                    node
-                    scope
-                    depth
-                    path
-                    ;
-                });
+                # level children share the enclosing term's node and depth account
+                normalized = levels.normalizeInput {
+                  value = job.node.level;
+                  inherit consumed;
+                  depth = job.depth + 1;
+                };
               in
-              if !mapped.success then
-                [
-                  (finish (next {
-                    inherit consumed;
-                    result = failure "internal-bug" job.path "variable-map";
-                  }))
-                ]
+              if !normalized.ok then
+                next {
+                  status = "done";
+                  jobs = [ ];
+                  consumed = normalized.inputConsumed or normalized.consumed;
+                  result = failure normalized.kind (job.path ++ [ "level" ]) normalized.detail;
+                }
               else
-                let
-                  values = [ mapped.value ] ++ state.values;
+                next {
+                  inherit (normalized) consumed;
+                  jobs = rest;
+                  values = [ (representation.universe normalized.value) ] ++ state.values;
                   paths = [ job.path ] ++ state.paths;
-                  variables = [
-                    {
-                      inherit (job) path;
-                      inherit (job.node) level;
-                    }
-                  ]
-                  ++ state.variables;
-                in
-                [
-                  (next {
-                    inherit
-                      consumed
-                      values
-                      paths
-                      variables
-                      ;
-                    jobs = rest;
-                    status = if rest == [ ] then "done" else "running";
-                  })
-                ]
-          else if inspected.value.kind == "lambda" then
-            if !exact [ "body" "kind" ] job.node then
-              [
-                (finish (next {
-                  inherit consumed;
-                  result = failure "boundary-mismatch" job.path "lambda";
-                }))
-              ]
+                  status = if rest == [ ] then "done" else "running";
+                }
+          else if
+            builtins.elem inspected.value.kind [
+              "unit-type"
+              "unit"
+              "empty-type"
+            ]
+          then
+            if !exact [ "kind" ] job.node then
+              stop (failure "boundary-mismatch" job.path inspected.value.kind)
             else
-              [
-                (next {
-                  inherit consumed;
-                  paths = [ job.path ] ++ state.paths;
-                  jobs = [
-                    {
-                      action = "visit";
-                      node = job.node.body;
-                      scope = job.scope + 1;
-                      depth = job.depth + 1;
-                      path = job.path ++ [ "body" ];
-                    }
-                    { action = "build-lambda"; }
-                  ]
-                  ++ rest;
-                })
-              ]
-          else if inspected.value.kind == "application" then
-            if !exact [ "argument" "function" "kind" ] job.node then
-              [
-                (finish (next {
-                  inherit consumed;
-                  result = failure "boundary-mismatch" job.path "application";
-                }))
-              ]
-            else
-              [
-                (next {
-                  inherit consumed;
-                  paths = [ job.path ] ++ state.paths;
-                  jobs = [
-                    {
-                      action = "visit";
-                      node = job.node.function;
-                      inherit (job) scope;
-                      depth = job.depth + 1;
-                      path = job.path ++ [ "function" ];
-                    }
-                    {
-                      action = "visit";
-                      node = job.node.argument;
-                      inherit (job) scope;
-                      depth = job.depth + 1;
-                      path = job.path ++ [ "argument" ];
-                    }
-                    { action = "build-application"; }
-                  ]
-                  ++ rest;
-                })
-              ]
-          else if inspected.value.kind == "annotation" then
-            if !exact [ "annotation" "kind" "subject" ] job.node then
-              [
-                (finish (next {
-                  inherit consumed;
-                  result = failure "boundary-mismatch" job.path "annotation";
-                }))
-              ]
-            else
-              [
-                (next {
-                  inherit consumed;
-                  paths = [ job.path ] ++ state.paths;
-                  jobs = [
-                    {
-                      action = "visit";
-                      node = job.node.subject;
-                      inherit (job) scope;
-                      depth = job.depth + 1;
-                      path = job.path ++ [ "subject" ];
-                    }
-                    {
-                      action = "visit";
-                      node = job.node.annotation;
-                      inherit (job) scope;
-                      depth = job.depth + 1;
-                      path = job.path ++ [ "annotation" ];
-                    }
-                    { action = "build-annotation"; }
-                  ]
-                  ++ rest;
-                })
-              ]
-          else
-            [
-              (finish (next {
+              let
+                value =
+                  if inspected.value.kind == "unit-type" then
+                    representation.unitType
+                  else if inspected.value.kind == "unit" then
+                    representation.unit
+                  else
+                    representation.emptyType;
+              in
+              next {
                 inherit consumed;
-                result = failure "boundary-mismatch" job.path "constructor";
-              }))
-            ];
-
+                jobs = rest;
+                values = [ value ] ++ state.values;
+                paths = [ job.path ] ++ state.paths;
+                status = if rest == [ ] then "done" else "running";
+              }
+          else
+            let
+              described = spec job;
+            in
+            if !described.ok then
+              stop (failure "boundary-mismatch" job.path "constructor")
+            else
+              next {
+                inherit consumed;
+                paths = [ job.path ] ++ state.paths;
+                jobs =
+                  described.children
+                  ++ [
+                    {
+                      action = "build";
+                      kind = inspected.value.kind;
+                      count = builtins.length described.children;
+                      inherit (job) path;
+                    }
+                  ]
+                  ++ rest;
+              };
   rewrite =
     {
       root,
@@ -330,7 +332,6 @@ let
       }
     else
       failure "internal-bug" [ ] "machine-final-state";
-
   equal =
     {
       left,
@@ -338,103 +339,16 @@ let
       scope,
     }:
     let
-      leftChecked = rewrite {
+      a = rewrite {
         root = left;
         inherit scope;
       };
-      rightChecked = rewrite {
+      b = rewrite {
         root = right;
         inherit scope;
       };
-      states = builtins.genericClosure {
-        startSet = [
-          {
-            key = 0;
-            status = "running";
-            consumed = 0;
-            jobs = [ { inherit left right; } ];
-          }
-        ];
-        operator =
-          state:
-          if state.status != "running" || state.jobs == [ ] then
-            [ ]
-          else
-            let
-              job = builtins.head state.jobs;
-              rest = builtins.tail state.jobs;
-              nextKey = state.key + 1;
-              stop = equalValue: [
-                (
-                  state
-                  // {
-                    key = nextKey;
-                    status = "done";
-                    jobs = [ ];
-                    inherit equalValue;
-                  }
-                )
-              ];
-              continue = jobs: [
-                (
-                  state
-                  // {
-                    key = nextKey;
-                    consumed = state.consumed + 1;
-                    inherit jobs;
-                    status = if jobs == [ ] then "done" else "running";
-                  }
-                )
-              ];
-            in
-            if state.consumed >= limits.nodes then
-              stop false
-            else if job.left.kind != job.right.kind then
-              stop false
-            else if job.left.kind == "variable" then
-              if job.left.level == job.right.level then continue rest else stop false
-            else if job.left.kind == "lambda" then
-              continue (
-                [
-                  {
-                    left = job.left.body;
-                    right = job.right.body;
-                  }
-                ]
-                ++ rest
-              )
-            else if job.left.kind == "application" then
-              continue (
-                [
-                  {
-                    left = job.left.function;
-                    right = job.right.function;
-                  }
-                  {
-                    left = job.left.argument;
-                    right = job.right.argument;
-                  }
-                ]
-                ++ rest
-              )
-            else
-              continue (
-                [
-                  {
-                    left = job.left.subject;
-                    right = job.right.subject;
-                  }
-                  {
-                    left = job.left.annotation;
-                    right = job.right.annotation;
-                  }
-                ]
-                ++ rest
-              );
-      };
-      final = builtins.elemAt states (builtins.length states - 1);
     in
-    leftChecked.ok && rightChecked.ok && final.status == "done" && (final.equalValue or true);
+    a.ok && b.ok && a.value == b.value;
 in
 {
   inherit rewrite equal;

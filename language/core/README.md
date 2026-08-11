@@ -1,28 +1,16 @@
-# Core syntax
+# Core syntax and rule families
 
-This subsystem admits scope-valid untyped syntax. It doesn’t assign types, evaluate terms, compare by definitional equality, or carry proofs. Accurate wording is “admitted scope-valid syntax.”
+This subsystem admits scope-valid syntax and decides the dedicated level algebra. It doesn't assign types, compare terms by definitional equality, or carry proofs. Formation calculations are executable law evidence, not checker results.
 
-The structural inventory is variable, lambda, application, and annotation. Variables use absolute De Bruijn levels. A lambda introduces the current scope size, and its body runs at scope plus one. Annotation contains two syntax children and has no typing meaning.
+Core syntax generation `axiom-core-syntax-2` admits variable, lambda, application, annotation, universe, pi, sigma, binary sum, unit, empty, pair and projections, injections and dependent case, identity, refl, and general J. Levels are a separate zero, successor, and maximum sort. Closed level expressions normalize to a bounded successor chain; exact canonical equality provides the non-cumulative universe arithmetic.
 
-Public input is a forgeable generation-bearing envelope. The syntax decoder checks the envelope, traverses the term, and rebuilds canonical nodes. Core constructors and admitted nodes aren’t exported from `language/default.nix`. The frozen syntax generation is `axiom-core-syntax-1`; missing, unknown, and stale generations fail before node traversal.
+Variables use absolute De Bruijn levels. Pi and sigma codomains bind one level. Sum motive and branches each bind one level. Unit and empty motives bind one level. General J's motive binds source, target, and evidence in that order; its refl branch binds only the witness. Generic binder-body opening and closing operate on an explicit ordered consecutive top segment and never discover binders from syntax or manifests.
 
-Names and locations live in one sparse parallel metadata list keyed by structural paths. The decoder derives valid paths from the canonical tree, rejects duplicate or nonexistent paths, and orders accepted entries by structural traversal. Metadata, path, and location spines are charged before component inspection. Validation observes at most 257 metadata cells, 65 path cells, and 17 location cells; the refused component remains untouched. Paths stop at depth 64. Locations contain at most 16 string or integer components. Metadata doesn’t participate in structural identity.
+Public envelopes are forgeable. Admission checks `axiom-core-syntax-2`, exact shapes, scope, resources, and metadata before rebuilding private canonical nodes. Missing or stale generations fail before term traversal. Names and locations remain outside structural identity.
 
-Weakening and renaming preserve metadata because they preserve shape. Substitution and opening remove metadata at replaced variables, then prefix replacement metadata at every insertion site. Closing adds one binder entry and prefixes body metadata. Final admission validates and orders the resulting channel again.
+`rule-families.nix` records syntax, formation, introduction, elimination, computation, equality, eta status, semantics, diagnostics, laws, and the subsystem responsible for each implemented operation. Checking, conversion, quotation, and readback remain reserved for separate trusted layers and aren't implemented here. Structural and evaluator dispatch don't reference manifest data, which supplies no semantic authority.
 
-The root is depth 0. A traversal admits 256 demanded nodes through depth 64. It charges before outer classification, so the first refused node isn’t inspected. Traversal uses a first-order `genericClosure` worklist. Children are prepended in bounded groups, results are prepended, and the final value is selected once. There’s no growing-list append, repeated name scan, or per-node scope-map indexing.
-
-Failures are boundary mismatch, host failure, resource exhaustion, and internal bug. A successfully classified non-attr node is a mismatch. A catchable failure during outer classification is a host failure. Core operations return internal structured data; the public decoder projects those classes through the Stage 1 result vocabulary.
-
-Dependencies point from syntax decoding into the private core assembly. Core files import no boundary module, legacy `src/`, evaluator, checker, or semantic layer. Tests may assemble core and decoder directly.
-
-Change impact:
-
-- a constructor change touches representation, machine dispatch, operations, generated laws, decoder shape rejection, and this inventory;
-- a scope rule change touches machine admission, scope transformations, substitution laws, and malformed-reference gates;
-- a limit change touches representation, exact-limit tests, poison tests, metadata validation, and this contract;
-- a metadata path change touches decoder canonicalization, replacement splicing, opening/closing remapping, and metadata gates;
-- a generation change touches representation, stale-generation tests, and public export fixtures.
+A constructor change touches representation, the structural machine, operations, both evaluators, projection, executable completeness fixtures, manifests, and this contract. A binder change also touches the ordered opening/closing gates. A level-law change touches normalization, formation calculators, universe fixtures, and output-accounting limits.
 
 Permanent gates from the repository root:
 

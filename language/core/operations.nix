@@ -597,6 +597,104 @@ let
             binder.metadata ++ prefixMetadata [ "body" ] source.value.metadata
           )
         );
+  # binder bodies use one ordered consecutive segment above the unchanged outer scope
+  closeBinderBody =
+    { envelope, sourceLevels }:
+    let
+      source = admitted envelope;
+      count = if builtins.isList sourceLevels then builtins.length sourceLevels else -1;
+      unique =
+        builtins.length (
+          builtins.attrNames (
+            builtins.listToAttrs (
+              map (level: {
+                name = toString level;
+                value = true;
+              }) sourceLevels
+            )
+          )
+        ) == count;
+      valid =
+        source.ok
+        && count >= 0
+        && unique
+        && builtins.all (level: builtins.isInt level && level >= 0 && level < envelope.scope) sourceLevels;
+      positions = builtins.listToAttrs (
+        builtins.genList (index: {
+          name = toString (builtins.elemAt sourceLevels index);
+          value = index;
+        }) count
+      );
+      rewritten =
+        if !valid then
+          rejected "boundary-mismatch" "binder-close"
+        else
+          machine.rewrite {
+            root = source.value.root;
+            inherit (envelope) scope;
+            onVariable =
+              { node, ... }:
+              let
+                key = toString node.level;
+              in
+              if node.level < envelope.scope && builtins.hasAttr key positions then
+                representation.variable (envelope.scope + positions.${key})
+              else if node.level >= envelope.scope then
+                representation.variable (node.level + count)
+              else
+                representation.variable node.level;
+          };
+    in
+    if !valid then
+      rejected "boundary-mismatch" "binder-close"
+    else if !rewritten.ok then
+      rewritten
+    else
+      admitted (representation.envelope (envelope.scope + count) rewritten.value source.value.metadata);
+
+  openBinderBody =
+    {
+      envelope,
+      outerScope,
+      replacements,
+    }:
+    let
+      source = admitted envelope;
+      count = if builtins.isList replacements then builtins.length replacements else -1;
+      prepared =
+        if count < 0 then
+          rejected "boundary-mismatch" "binder-open"
+        else
+          prepareReplacements outerScope replacements;
+      valid =
+        source.ok
+        && builtins.isInt outerScope
+        && outerScope >= 0
+        && envelope.scope == outerScope + count
+        && prepared.ok
+        && prepared.index == count;
+      rewritten =
+        if !valid then
+          rejected "boundary-mismatch" "binder-open"
+        else
+          machine.rewrite {
+            root = source.value.root;
+            inherit (envelope) scope;
+            onVariable =
+              { node, ... }:
+              if node.level < outerScope then
+                representation.variable node.level
+              else if node.level < outerScope + count then
+                prepared.table.${toString (node.level - outerScope)}.root
+              else
+                representation.variable (node.level - count);
+          };
+    in
+    if !valid then
+      rejected "boundary-mismatch" "binder-open"
+    else
+      finish outerScope source.value.metadata rewritten;
+
 in
 {
   inherit
@@ -605,6 +703,8 @@ in
     substitute
     open
     close
+    closeBinderBody
+    openBinderBody
     ;
   weaken = args: transformMap (args // { injective = true; });
   rename = args: transformMap (args // { injective = false; });

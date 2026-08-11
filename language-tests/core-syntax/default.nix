@@ -532,7 +532,148 @@ let
   exactDepth = decode (envelope 0 (nestedLambda 64 (variable 0)) [ ]);
   overDepth = decode (envelope 0 (nestedLambda 65 poison) [ ]);
 
+  matrixTerms = [
+    (representation.variable 0)
+    (representation.lambda (representation.variable 3))
+    (representation.application (representation.variable 0) (representation.variable 1))
+    (representation.annotation (representation.variable 0) (representation.variable 1))
+    (representation.universe (representation.levelSuc representation.levelZero))
+    (representation.pi (representation.variable 0) (representation.variable 3))
+    (representation.sigma (representation.variable 0) (representation.variable 3))
+    (representation.sumType (representation.variable 0) (representation.variable 1))
+    representation.unitType
+    representation.unit
+    representation.emptyType
+    (representation.pair (representation.variable 0) (representation.variable 1))
+    (representation.firstProjection (representation.variable 0))
+    (representation.secondProjection (representation.variable 0))
+    (representation.leftInjection (representation.variable 0))
+    (representation.rightInjection (representation.variable 1))
+    (representation.sumElimination (representation.variable 0) (representation.variable 3)
+      (representation.variable 3)
+      (representation.variable 3)
+    )
+    (representation.unitElimination (representation.variable 0) (representation.variable 3) (
+      representation.variable 1
+    ))
+    (representation.emptyElimination (representation.variable 0) (representation.variable 3))
+    (representation.identityType (representation.variable 0) (representation.variable 1) (
+      representation.variable 2
+    ))
+    (representation.refl (representation.variable 0))
+    (representation.identityElimination (representation.variable 0) (representation.variable 5) (
+      representation.variable 3
+    ))
+  ];
+  matrixEnvelope =
+    term:
+    let
+      validated = core.machine.validate {
+        root = term;
+        scope = 3;
+      };
+      metadata = map (path: metadataEntry path "matrix") validated.paths;
+    in
+    representation.envelope 3 term metadata;
+  matrixCheck =
+    term:
+    let
+      source = operations.admitted (matrixEnvelope term);
+      weakened = operations.weaken {
+        envelope = source.value;
+        targetScope = 6;
+        mapping = [
+          0
+          2
+          4
+        ];
+      };
+      collision = operations.rename {
+        envelope = source.value;
+        targetScope = 1;
+        mapping = [
+          0
+          0
+          0
+        ];
+      };
+      identity = operations.substitute {
+        envelope = source.value;
+        targetScope = 3;
+        replacements = map (level: representation.envelope 3 (representation.variable level) [ ]) [
+          0
+          1
+          2
+        ];
+      };
+      firstReplacements = map (level: representation.envelope 3 (representation.variable level) [ ]) [
+        1
+        2
+        0
+      ];
+      secondReplacements = map (level: representation.envelope 3 (representation.variable level) [ ]) [
+        2
+        0
+        1
+      ];
+      firstApplied = operations.substitute {
+        envelope = source.value;
+        targetScope = 3;
+        replacements = firstReplacements;
+      };
+      sequential = operations.substitute {
+        envelope = firstApplied.value;
+        targetScope = 3;
+        replacements = secondReplacements;
+      };
+      composedReplacements = map (
+        replacement:
+        (operations.substitute {
+          envelope = replacement;
+          targetScope = 3;
+          replacements = secondReplacements;
+        }).value
+      ) firstReplacements;
+      directComposition = operations.substitute {
+        envelope = source.value;
+        targetScope = 3;
+        replacements = composedReplacements;
+      };
+      capture = operations.substitute {
+        envelope = source.value;
+        targetScope = 3;
+        replacements = [
+          (representation.envelope 3 (representation.lambda (representation.variable 3)) [ ])
+          (representation.envelope 3 (representation.pi (representation.variable 1) (
+            representation.variable 3
+          )) [ ])
+          (representation.envelope 3 (representation.identityElimination (representation.variable 2)
+            (representation.variable 5)
+            (representation.variable 3)
+          ) [ ])
+        ];
+      };
+    in
+    source.ok
+    && weakened.ok
+    && collision.ok
+    && identity.ok
+    && firstApplied.ok
+    && sequential.ok
+    && directComposition.ok
+    && capture.ok
+    && operations.structurallyEqual source.value identity.value
+    && operations.structurallyEqual sequential.value directComposition.value
+    && metadataPathsExist weakened.value
+    && metadataPathsExist collision.value
+    && metadataPathsExist identity.value
+    && metadataPathsExist sequential.value
+    && metadataPathsExist capture.value;
+  matrixKinds = map (term: term.kind) matrixTerms;
+
   cases = {
+    completeConstructorOperationMatrix =
+      matrixKinds == representation.termKinds && builtins.all matrixCheck matrixTerms;
     generatedStructuralLaws = generatedLawPass;
     weakeningExact = weakened.ok && structurally 4 weakened.value.root expectedWeakened;
     collisionRenamingExact =
@@ -623,7 +764,7 @@ let
     exactDepthBoundary = exactDepth.kind == "success";
     depthPoisonRefused =
       overDepth.kind == "resource-exhaustion" && overDepth.dimension == "depth" && overDepth.limit == 64;
-    syntaxGenerationFrozen = representation.generation == "axiom-core-syntax-1";
+    syntaxGenerationFrozen = representation.generation == "axiom-core-syntax-2";
     resourceLimitsFrozen =
       representation.limits == {
         nodes = 256;
@@ -631,15 +772,36 @@ let
         locationComponents = 16;
       };
     inventoryFrozen =
-      builtins.attrNames representation == [
-        "annotation"
-        "application"
-        "envelope"
-        "generation"
-        "lambda"
-        "limits"
+      representation.termKinds == [
         "variable"
-      ];
+        "lambda"
+        "application"
+        "annotation"
+        "universe"
+        "pi"
+        "sigma"
+        "sum-type"
+        "unit-type"
+        "unit"
+        "empty-type"
+        "pair"
+        "first-projection"
+        "second-projection"
+        "left-injection"
+        "right-injection"
+        "sum-elimination"
+        "unit-elimination"
+        "empty-elimination"
+        "identity-type"
+        "refl"
+        "identity-elimination"
+      ]
+      &&
+        representation.levelKinds == [
+          "zero"
+          "suc"
+          "max"
+        ];
   };
   failing = builtins.attrNames (
     builtins.removeAttrs cases (builtins.filter (name: cases.${name}) (builtins.attrNames cases))

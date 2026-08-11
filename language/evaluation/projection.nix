@@ -1,6 +1,6 @@
 { representation, result }:
 let
-  reverse = builtins.foldl' (values: value: [ value ] ++ values) [ ];
+  reverse = builtins.foldl' (xs: x: [ x ] ++ xs) [ ];
   spend =
     state:
     if state.remaining == 0 then
@@ -9,76 +9,18 @@ let
         failure = result.exhausted "nodes" state.limit state.consumed;
       }
     else
-      {
+      state
+      // {
         ok = true;
         remaining = state.remaining - 1;
         consumed = state.consumed + 1;
-        inherit (state) limit;
       };
-
   projectTerm =
     state: term:
     let
       charged = spend state;
     in
-    if !charged.ok then
-      charged
-    else if term.kind == "variable" then
-      charged
-      // {
-        value = {
-          kind = "variable";
-          inherit (term) level;
-        };
-      }
-    else if term.kind == "lambda" then
-      let
-        body = projectTerm charged term.body;
-      in
-      if !body.ok then
-        body
-      else
-        body
-        // {
-          value = {
-            kind = "lambda";
-            body = body.value;
-          };
-        }
-    else if term.kind == "application" then
-      let
-        function = projectTerm charged term.function;
-        argument = if function.ok then projectTerm function term.argument else function;
-      in
-      if !argument.ok then
-        argument
-      else
-        argument
-        // {
-          value = {
-            kind = "application";
-            function = function.value;
-            argument = argument.value;
-          };
-        }
-    else
-      let
-        subject = projectTerm charged term.subject;
-        annotation = if subject.ok then projectTerm subject term.annotation else subject;
-      in
-      if !annotation.ok then
-        annotation
-      else
-        annotation
-        // {
-          value = {
-            kind = "annotation";
-            subject = subject.value;
-            annotation = annotation.value;
-          };
-        };
-
-  # environment projection visits every recorded level and cannot witness runtime laziness
+    if !charged.ok then charged else charged // { value = term; };
   projectEnvironment =
     state: environment:
     if !representation.generationMatches environment then
@@ -88,8 +30,8 @@ let
       }
     else
       let
-        levels = builtins.genList (level: level) environment.nextLevel;
-        collected = builtins.foldl' (
+        levels = builtins.genList (x: x) environment.nextLevel;
+        folded = builtins.foldl' (
           current: level:
           if !current.ok then
             current
@@ -100,10 +42,7 @@ let
             if !builtins.hasAttr key environment.cells then
               {
                 ok = false;
-                failure = result.internalBug result.codes.missingEnvironmentLevel {
-                  inherit level;
-                  inherit (environment) nextLevel;
-                };
+                failure = result.internalBug result.codes.missingEnvironmentLevel { inherit level; };
               }
             else
               let
@@ -124,17 +63,16 @@ let
                 }
         ) (state // { entries = [ ]; }) levels;
       in
-      if !collected.ok then
-        collected
+      if !folded.ok then
+        folded
       else
-        collected
+        folded
         // {
           value = {
             inherit (environment) nextLevel;
-            cells = reverse collected.entries;
+            cells = reverse folded.entries;
           };
         };
-
   projectCell =
     state: cell:
     if !representation.generationMatches cell then
@@ -162,7 +100,7 @@ let
               inherit (value) value;
             };
           }
-      else
+      else if cell.kind == "thunk" then
         let
           term = projectTerm charged cell.term;
           environment = if term.ok then projectEnvironment term cell.environment else term;
@@ -177,8 +115,159 @@ let
               term = term.value;
               environment = environment.value;
             };
+          }
+      else
+        {
+          ok = false;
+          failure = result.internalBug result.codes.invalidEnvironmentCell { kind = cell.kind or null; };
+        };
+  projectClosure =
+    state: closure:
+    # closure payloads stay inaccessible until their owning stamp is accepted
+    if !representation.generationMatches closure then
+      {
+        ok = false;
+        failure = result.internalBug result.codes.staleSemanticGeneration { };
+      }
+    else
+      let
+        charged = spend state;
+        body = if charged.ok then projectTerm charged closure.body else charged;
+        environment = if body.ok then projectEnvironment body closure.environment else body;
+      in
+      if !environment.ok then
+        environment
+      else
+        environment
+        // {
+          value = {
+            body = body.value;
+            environment = environment.value;
           };
-
+        };
+  projectSpineItem =
+    state: item:
+    if !representation.generationMatches item then
+      {
+        ok = false;
+        failure = result.internalBug result.codes.staleSemanticGeneration { };
+      }
+    else
+      let
+        charged = spend state;
+      in
+      if !charged.ok then
+        charged
+      else if item.kind == "application" then
+        let
+          x = projectCell charged item.argument;
+        in
+        if !x.ok then
+          x
+        else
+          x
+          // {
+            value = {
+              inherit (item) kind;
+              argument = x.value;
+            };
+          }
+      else if
+        builtins.elem item.kind [
+          "first-projection"
+          "second-projection"
+        ]
+      then
+        charged // { value = { inherit (item) kind; }; }
+      else if item.kind == "sum-elimination" then
+        let
+          m = projectClosure charged item.motive;
+          l = if m.ok then projectClosure m item.leftBranch else m;
+          r = if l.ok then projectClosure l item.rightBranch else l;
+        in
+        if !r.ok then
+          r
+        else
+          r
+          // {
+            value = {
+              inherit (item) kind;
+              motive = m.value;
+              leftBranch = l.value;
+              rightBranch = r.value;
+            };
+          }
+      else if item.kind == "unit-elimination" then
+        let
+          m = projectClosure charged item.motive;
+          c = if m.ok then projectCell m item.case else m;
+        in
+        if !c.ok then
+          c
+        else
+          c
+          // {
+            value = {
+              inherit (item) kind;
+              motive = m.value;
+              case = c.value;
+            };
+          }
+      else if item.kind == "empty-elimination" then
+        let
+          m = projectClosure charged item.motive;
+        in
+        if !m.ok then
+          m
+        else
+          m
+          // {
+            value = {
+              inherit (item) kind;
+              motive = m.value;
+            };
+          }
+      else if item.kind == "identity-elimination" then
+        let
+          m = projectClosure charged item.motive;
+          b = if m.ok then projectClosure m item.reflBranch else m;
+        in
+        if !b.ok then
+          b
+        else
+          b
+          // {
+            value = {
+              inherit (item) kind;
+              motive = m.value;
+              reflBranch = b.value;
+            };
+          }
+      else
+        {
+          ok = false;
+          failure = result.internalBug result.codes.invalidSemanticValue { kind = item.kind or null; };
+        };
+  projectCells =
+    state: fields:
+    builtins.foldl' (
+      current: field:
+      if !current.ok then
+        current
+      else
+        let
+          x = projectCell current field.value;
+        in
+        if !x.ok then
+          x
+        else
+          x
+          // {
+            attrs = current.attrs // {
+              ${field.name} = x.value;
+            };
+          }
+    ) (state // { attrs = { }; }) fields;
   projectValue =
     state: value:
     if !representation.generationMatches value then
@@ -194,73 +283,176 @@ let
         charged
       else if value.kind == "neutral" then
         let
-          collected = builtins.foldl' (
-            current: cell:
-            if !current.ok then
-              current
-            else
-              let
-                projected = projectCell current cell;
-              in
-              if !projected.ok then
-                projected
-              else
-                projected
+          countValid = builtins.isInt value.spineCount && value.spineCount >= 0;
+          items =
+            builtins.foldl'
+              (
+                current: item:
+                if !current.ok then
+                  current
+                else
+                  let
+                    x = projectSpineItem current item;
+                  in
+                  if !x.ok then
+                    x
+                  else
+                    x
+                    // {
+                      entries = [ x.value ] ++ current.entries;
+                      observedCount = current.observedCount + 1;
+                    }
+              )
+              (
+                charged
                 // {
-                  entries = [ projected.value ] ++ current.entries;
+                  entries = [ ];
+                  observedCount = 0;
                 }
-          ) (charged // { entries = [ ]; }) value.spine;
+              )
+              value.spine;
         in
-        if !collected.ok then
-          collected
+        # projection validates the recorded count during the bounded spine traversal
+        if !countValid then
+          {
+            ok = false;
+            failure = result.internalBug result.codes.invalidSemanticValue { kind = "neutral-spine-count"; };
+          }
+        else if !items.ok then
+          items
+        else if items.observedCount != value.spineCount then
+          {
+            ok = false;
+            failure = result.internalBug result.codes.invalidSemanticValue { kind = "neutral-spine-count"; };
+          }
         else
-          collected
+          items
           // {
             value = {
               kind = "neutral";
               level = value.head.level;
-              spine = reverse collected.entries;
+              spine = items.entries;
+              inherit (value) spineCount;
             };
           }
-      else
+      else if value.kind == "closure" then
         let
-          body = projectTerm charged value.body;
-          environment = if body.ok then projectEnvironment body value.environment else body;
+          x = projectClosure charged value;
         in
-        if !environment.ok then
-          environment
+        if !x.ok then
+          x
         else
-          environment
+          x
           // {
             value = {
               kind = "closure";
-              body = body.value;
-              environment = environment.value;
+              inherit (x.value) body environment;
             };
+          }
+      else if value.kind == "universe" then
+        charged
+        // {
+          value = {
+            inherit (value) kind;
+            inherit (value) level;
           };
-
-  primitiveEqual =
-    left: right:
-    builtins.typeOf left == builtins.typeOf right
-    && (
-      if builtins.isAttrs left then
-        let
-          leftNames = builtins.attrNames left;
-          rightNames = builtins.attrNames right;
-        in
-        builtins.length leftNames == builtins.length rightNames
-        && builtins.all (
-          name: builtins.hasAttr name right && primitiveEqual left.${name} right.${name}
-        ) leftNames
-      else if builtins.isList left then
-        builtins.length left == builtins.length right
-        && builtins.all (index: primitiveEqual (builtins.elemAt left index) (builtins.elemAt right index)) (
-          builtins.genList (index: index) (builtins.length left)
-        )
+        }
+      else if
+        builtins.elem value.kind [
+          "unit-type"
+          "empty-type"
+          "unit"
+        ]
+      then
+        charged // { value = { inherit (value) kind; }; }
       else
-        left == right
-    );
-
+        let
+          fields =
+            if value.kind == "pi" || value.kind == "sigma" then
+              [
+                {
+                  name = "domain";
+                  value = value.domain;
+                }
+              ]
+            else if value.kind == "sum-type" then
+              [
+                {
+                  name = "left";
+                  value = value.left;
+                }
+                {
+                  name = "right";
+                  value = value.right;
+                }
+              ]
+            else if value.kind == "pair" then
+              [
+                {
+                  name = "first";
+                  value = value.first;
+                }
+                {
+                  name = "second";
+                  value = value.second;
+                }
+              ]
+            else if
+              builtins.elem value.kind [
+                "left-injection"
+                "right-injection"
+                "refl"
+              ]
+            then
+              [
+                {
+                  name = "value";
+                  inherit (value) value;
+                }
+              ]
+            else if value.kind == "identity-type" then
+              [
+                {
+                  name = "carrier";
+                  value = value.carrier;
+                }
+                {
+                  name = "left";
+                  value = value.left;
+                }
+                {
+                  name = "right";
+                  value = value.right;
+                }
+              ]
+            else
+              [ ];
+          cells = projectCells charged fields;
+          family =
+            if cells.ok && (value.kind == "pi" || value.kind == "sigma") then
+              projectClosure cells value.codomain
+            else
+              cells;
+        in
+        if !family.ok || fields == [ ] then
+          if fields == [ ] then
+            {
+              ok = false;
+              failure = result.internalBug result.codes.invalidSemanticValue { kind = value.kind or null; };
+            }
+          else
+            family
+        else
+          family
+          // {
+            value =
+              family.attrs
+              // {
+                inherit (value) kind;
+              }
+              // (if value.kind == "pi" || value.kind == "sigma" then { codomain = family.value; } else { });
+          };
+  primitiveEqual = left: right: builtins.toJSON left == builtins.toJSON right;
   semanticEvents =
     trace:
     builtins.filter (
@@ -280,7 +472,7 @@ in
   project =
     {
       value,
-      limit ? 1024,
+      limit ? 4096,
     }:
     projectValue {
       remaining = limit;
@@ -288,12 +480,11 @@ in
       inherit limit;
       ok = true;
     } value;
-
   equal =
     {
       left,
       right,
-      limit ? 1024,
+      limit ? 4096,
     }:
     let
       a = projectValue {
@@ -310,7 +501,6 @@ in
       } right;
     in
     a.ok && b.ok && primitiveEqual a.value b.value;
-
   traceEqual = left: right: primitiveEqual (semanticEvents left) (semanticEvents right);
   inherit semanticEvents primitiveEqual;
 }

@@ -1,9 +1,8 @@
 let
-  generation = "axiom-evaluation-1";
+  generation = "axiom-evaluation-2";
   levelKey = toString;
   stamped = value: value // { inherit generation; };
-
-  # generation checks force only the stamp and leave representation payloads untouched
+  # generation checks inspect the owning stamp without traversing inactive payloads
   generationMatches =
     value:
     let
@@ -15,21 +14,19 @@ let
       );
     in
     checked.success && checked.value;
-
   valueCell =
     value:
     stamped {
       kind = "value";
       inherit value;
     };
-
   thunkCell =
     environment: term:
     stamped {
       kind = "thunk";
       inherit environment term;
     };
-
+  spineItem = stamped;
   neutral =
     level:
     stamped {
@@ -39,15 +36,79 @@ let
         inherit level;
       };
       spine = [ ];
+      spineCount = 0;
     };
-
+  # newest-first storage makes elimination extension constant time while projection restores semantic order
+  extendNeutral =
+    value: item:
+    value
+    // {
+      spine = [ (spineItem item) ] ++ value.spine;
+      spineCount = value.spineCount + 1;
+    };
   closure =
     environment: body:
     stamped {
       kind = "closure";
       inherit environment body;
     };
-
+  universe =
+    level:
+    stamped {
+      kind = "universe";
+      inherit level;
+    };
+  pi =
+    domain: codomain:
+    stamped {
+      kind = "pi";
+      inherit domain codomain;
+    };
+  sigma =
+    domain: codomain:
+    stamped {
+      kind = "sigma";
+      inherit domain codomain;
+    };
+  sumType =
+    left: right:
+    stamped {
+      kind = "sum-type";
+      inherit left right;
+    };
+  unitType = stamped { kind = "unit-type"; };
+  emptyType = stamped { kind = "empty-type"; };
+  unit = stamped { kind = "unit"; };
+  pair =
+    first: second:
+    stamped {
+      kind = "pair";
+      inherit first second;
+    };
+  leftInjection =
+    value:
+    stamped {
+      kind = "left-injection";
+      inherit value;
+    };
+  rightInjection =
+    value:
+    stamped {
+      kind = "right-injection";
+      inherit value;
+    };
+  identityType =
+    carrier: left: right:
+    stamped {
+      kind = "identity-type";
+      inherit carrier left right;
+    };
+  refl =
+    value:
+    stamped {
+      kind = "refl";
+      inherit value;
+    };
   initialEnvironment =
     scope:
     stamped {
@@ -59,8 +120,7 @@ let
         }) scope
       );
     };
-
-  # nextLevel names the new binder before the environment advances
+  # the environment names each binder with the current absolute next level
   extendEnvironment =
     environment: cell:
     if !generationMatches environment || !generationMatches cell then
@@ -78,8 +138,6 @@ let
           };
         };
       };
-
-  # decimal keys encode levels directly and their ordering carries no meaning
   lookupEnvironment =
     environment: level:
     let
@@ -119,8 +177,22 @@ in
     levelKey
     valueCell
     thunkCell
+    spineItem
     neutral
+    extendNeutral
     closure
+    universe
+    pi
+    sigma
+    sumType
+    unitType
+    emptyType
+    unit
+    pair
+    leftInjection
+    rightInjection
+    identityType
+    refl
     initialEnvironment
     extendEnvironment
     lookupEnvironment

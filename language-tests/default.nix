@@ -22,6 +22,8 @@ let
   hostBoundary = import ./host-boundary { language = directLanguage; };
   coreSyntax = import ./core-syntax { language = directLanguage; };
   evaluation = import ./evaluation { language = directLanguage; };
+  levels = import ./levels { core = import ../language/core; };
+  ruleFamilies = import ./rule-families { core = import ../language/core; };
 
   isolatedLegacyRoot = builtins.path {
     path = ../src;
@@ -96,6 +98,8 @@ let
     hostBoundary = hostBoundary.ok;
     coreSyntax = coreSyntax.ok;
     evaluation = evaluation.ok;
+    levels = levels.ok;
+    ruleFamilies = ruleFamilies.ok;
     newLineIndependent =
       directLanguage.generation == "axiom-language-1" && flakeLanguage.generation == "axiom-language-1";
     directLegacySurface = namesOf directLegacy == frozenLegacyNames;
