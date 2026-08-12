@@ -25,6 +25,7 @@ let
   levels = import ./levels { core = import ../language/core; };
   ruleFamilies = import ./rule-families { core = import ../language/core; };
   kernel = import ./kernel { language = directLanguage; };
+  logismos = import ./logismos { inherit lib; };
 
   isolatedLegacyRoot = builtins.path {
     path = ../src;
@@ -102,6 +103,7 @@ let
     levels = levels.ok;
     ruleFamilies = ruleFamilies.ok;
     kernel = kernel.ok;
+    logismos = logismos.ok;
     newLineIndependent =
       directLanguage.generation == "axiom-language-1" && flakeLanguage.generation == "axiom-language-1";
     directLegacySurface = namesOf directLegacy == frozenLegacyNames;
