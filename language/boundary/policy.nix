@@ -1,8 +1,12 @@
 {
   result,
   budget,
+  logismos,
 }:
 let
+  lists = import ../internal/lists.nix;
+  inherit (lists) reverse;
+  inherit (logismos) computation transition traversal;
   categories = [
     "null"
     "bool"
@@ -120,164 +124,308 @@ let
       builtins.seq inspected.kind inspected
     );
 
-  validateNode =
-    state: depth: path: plan:
-    let
-      charged = budget.charge {
-        operation = "validate-plan";
-        inherit path depth state;
-        budgetName = "plan";
-        budget = budget.planSpec;
+  validateFieldHeaders =
+    {
+      fields,
+      state,
+      depth,
+      pathRev,
+    }:
+    transition.run {
+      initial = {
+        status = "running";
+        remaining = fields;
+        index = 0;
+        seen = { };
+        canonical = [ ];
+        usage = state;
+        failure = null;
       };
-    in
-    if !charged.ok then
-      {
-        ok = false;
-        inherit (charged) failure;
-      }
-    else
-      let
-        inspected = inspectPlan plan;
-      in
-      if !inspected.success then
-        {
-          ok = false;
-          failure = result.hostFailure {
-            operation = "validate-plan";
-            inherit path;
-            guardedOperation = "observation-plan-node-validation";
-          };
-        }
-      else if inspected.value.kind == "invalid" then
-        {
-          ok = false;
-          failure = result.mismatch {
-            operation = "validate-plan";
-            inherit path;
-            expected = "valid-host-observation-plan-node";
-            observed = "malformed-host-observation-plan-node";
-          };
-        }
-      else if inspected.value.kind == "list" then
+      terminal = current: current.status != "running";
+      step =
+        current:
         let
-          child = validateNode charged.state (depth + 1) (path ++ [ "element" ]) inspected.value.element;
+          empty = builtins.tryEval (current.remaining == [ ]);
+          fieldPathRev = [ "field-spec:${toString current.index}" ] ++ pathRev;
+          fieldPath = reverse fieldPathRev;
         in
-        if !child.ok then
-          child
-        else
-          {
-            ok = true;
-            inherit (child) state;
-            canonical = {
-              kind = "list";
-              element = child.canonical;
-            };
-          }
-      else if inspected.value.kind == "attrs" then
-        let
-          fields = validateFields charged.state depth path 0 { } [ ] inspected.value.fields;
-        in
-        if !fields.ok then
-          fields
-        else
-          {
-            ok = true;
-            inherit (fields) state;
-            canonical = {
-              kind = "attrs";
-              fields = builtins.sort (left: right: builtins.lessThan left.name right.name) fields.canonical;
-            };
-          }
-      else
-        {
-          ok = true;
-          inherit (charged) state;
-          canonical = inspected.value;
-        };
-
-  validateFields =
-    state: depth: path: index: seen: canonical: fields:
-    if fields == [ ] then
-      {
-        ok = true;
-        inherit state canonical;
-      }
-    else
-      let
-        fieldPath = path ++ [ "field-spec:${toString index}" ];
-        charged = budget.charge {
-          operation = "validate-plan";
-          path = fieldPath;
-          inherit state depth;
-          budgetName = "plan";
-          budget = budget.planSpec;
-        };
-      in
-      if !charged.ok then
-        {
-          ok = false;
-          inherit (charged) failure;
-        }
-      else
-        let
-          inspected = builtins.tryEval (
-            let
-              field = builtins.head fields;
-              valid =
-                builtins.isAttrs field
-                &&
-                  builtins.attrNames field == [
-                    "name"
-                    "plan"
-                  ]
-                && builtins.isString field.name;
-              name = if valid then field.name else "";
-              child = if valid then field.plan else null;
-            in
-            builtins.seq valid (
-              builtins.seq name {
-                inherit valid name child;
-              }
-            )
-          );
-        in
-        if !inspected.success then
-          {
-            ok = false;
+        if !empty.success then
+          current
+          // {
+            status = "failed";
             failure = result.hostFailure {
               operation = "validate-plan";
               path = fieldPath;
               guardedOperation = "observation-plan-field-validation";
             };
           }
-        else if !inspected.value.valid || builtins.hasAttr inspected.value.name seen then
-          {
-            ok = false;
-            failure = result.mismatch {
-              operation = "validate-plan";
-              path = fieldPath;
-              expected = "unique-host-observation-field";
-              observed = "malformed-or-duplicate-field";
-            };
+        else if empty.value then
+          current
+          // {
+            status = "done";
+            canonical = reverse current.canonical;
           }
         else
           let
-            child = validateNode charged.state (depth + 1) (
-              path ++ [ "field:${inspected.value.name}" ]
-            ) inspected.value.child;
+            charged = budget.charge {
+              operation = "validate-plan";
+              path = fieldPath;
+              budgetName = "plan";
+              budget = budget.planSpec;
+              state = current.usage;
+              inherit depth;
+            };
           in
-          if !child.ok then
-            child
+          if !charged.ok then
+            current
+            // {
+              status = "failed";
+              inherit (charged) failure;
+            }
           else
-            validateFields child.state depth path (index + 1) (seen // { "${inspected.value.name}" = true; }) (
-              [
+            let
+              inspected = builtins.tryEval (
+                let
+                  field = builtins.head current.remaining;
+                  tail = builtins.tail current.remaining;
+                  valid =
+                    builtins.isAttrs field
+                    &&
+                      builtins.attrNames field == [
+                        "name"
+                        "plan"
+                      ]
+                    && builtins.isString field.name;
+                  name = if valid then field.name else "";
+                  child = if valid then field.plan else null;
+                in
+                builtins.seq valid (
+                  builtins.seq name (
+                    builtins.seq tail {
+                      inherit
+                        valid
+                        name
+                        child
+                        tail
+                        ;
+                    }
+                  )
+                )
+              );
+            in
+            if !inspected.success then
+              current
+              // {
+                status = "failed";
+                usage = charged.state;
+                failure = result.hostFailure {
+                  operation = "validate-plan";
+                  path = fieldPath;
+                  guardedOperation = "observation-plan-field-validation";
+                };
+              }
+            else if !inspected.value.valid || builtins.hasAttr inspected.value.name current.seen then
+              current
+              // {
+                status = "failed";
+                usage = charged.state;
+                failure = result.mismatch {
+                  operation = "validate-plan";
+                  path = fieldPath;
+                  expected = "unique-host-observation-field";
+                  observed = "malformed-or-duplicate-field";
+                };
+              }
+            else
+              current
+              // {
+                remaining = inspected.value.tail;
+                index = current.index + 1;
+                seen = current.seen // {
+                  "${inspected.value.name}" = true;
+                };
+                canonical = [
+                  {
+                    name = inspected.value.name;
+                    plan = inspected.value.child;
+                  }
+                ]
+                ++ current.canonical;
+                usage = charged.state;
+              };
+    };
+
+  validateNode =
+    state: plan:
+    let
+      folded = traversal.fold {
+        kinds = [
+          "attrs"
+          "category"
+          "list"
+          "opaque"
+        ];
+        root = {
+          inherit plan;
+          depth = 0;
+          pathRev = [ ];
+        };
+        inherit state;
+        invalidInventory = result.internalBug {
+          operation = "validate-plan";
+          path = [ ];
+          code = result.codes.unknownPlanDispatch;
+          context = { };
+        };
+        inspect =
+          { frame, state }:
+          let
+            path = reverse frame.pathRev;
+            charged = budget.charge {
+              operation = "validate-plan";
+              inherit path;
+              budgetName = "plan";
+              budget = budget.planSpec;
+              inherit state;
+              inherit (frame) depth;
+            };
+          in
+          if !charged.ok then
+            {
+              ok = false;
+              inherit (charged) failure;
+              inherit state;
+            }
+          else
+            let
+              inspected = inspectPlan frame.plan;
+            in
+            if !inspected.success then
+              {
+                ok = false;
+                inherit (charged) state;
+                failure = result.hostFailure {
+                  operation = "validate-plan";
+                  inherit path;
+                  guardedOperation = "observation-plan-node-validation";
+                };
+              }
+            else if inspected.value.kind == "invalid" then
+              {
+                ok = false;
+                inherit (charged) state;
+                failure = result.mismatch {
+                  operation = "validate-plan";
+                  inherit path;
+                  expected = "valid-host-observation-plan-node";
+                  observed = "malformed-host-observation-plan-node";
+                };
+              }
+            else if inspected.value.kind == "list" then
+              {
+                ok = true;
+                kind = "list";
+                descriptor = { };
+                children = [
+                  {
+                    plan = inspected.value.element;
+                    depth = frame.depth + 1;
+                    pathRev = [ "element" ] ++ frame.pathRev;
+                  }
+                ];
+                inherit (charged) state;
+              }
+            else if inspected.value.kind == "attrs" then
+              let
+                fields = validateFieldHeaders {
+                  inherit (inspected.value) fields;
+                  inherit (charged) state;
+                  inherit (frame) depth pathRev;
+                };
+              in
+              if fields.status == "failed" then
                 {
-                  name = inspected.value.name;
-                  plan = child.canonical;
+                  ok = false;
+                  inherit (fields) failure;
+                  state = fields.usage;
                 }
-              ]
-              ++ canonical
-            ) (builtins.tail fields);
+              else
+                {
+                  ok = true;
+                  kind = "attrs";
+                  descriptor = {
+                    names = map (field: field.name) fields.canonical;
+                  };
+                  children = map (field: {
+                    inherit (field) plan;
+                    depth = frame.depth + 1;
+                    pathRev = [ "field:${field.name}" ] ++ frame.pathRev;
+                  }) fields.canonical;
+                  state = fields.usage;
+                }
+            else
+              {
+                ok = true;
+                inherit (inspected.value) kind;
+                descriptor = inspected.value;
+                children = [ ];
+                inherit (charged) state;
+              };
+        reduce =
+          {
+            kind,
+            descriptor,
+            children,
+            state,
+          }:
+          if kind == "list" then
+            {
+              ok = true;
+              value = {
+                kind = "list";
+                element = builtins.head children;
+              };
+              inherit state;
+            }
+          else if kind == "attrs" then
+            let
+              canonical = builtins.genList (index: {
+                name = builtins.elemAt descriptor.names index;
+                plan = builtins.elemAt children index;
+              }) (builtins.length descriptor.names);
+            in
+            {
+              ok = true;
+              value = {
+                kind = "attrs";
+                fields = builtins.sort (left: right: builtins.lessThan left.name right.name) canonical;
+              };
+              inherit state;
+            }
+          else
+            {
+              ok = true;
+              value = descriptor;
+              inherit state;
+            };
+      };
+      executed = computation.run {
+        computation = folded;
+        reader = null;
+        state = null;
+      };
+    in
+    if executed.kind == "failure" then
+      {
+        ok = false;
+        inherit (executed) failure;
+      }
+    else
+      {
+        ok = true;
+        canonical = executed.value.value;
+        state = executed.value.callerState;
+      };
 in
 {
   inherit categories policies;
@@ -293,7 +441,7 @@ in
   validatePlan =
     plan:
     let
-      validated = validateNode { consumed = 0; } 0 [ ] plan;
+      validated = validateNode budget.initial plan;
     in
     if !validated.ok then
       validated.failure

@@ -1,4 +1,7 @@
-{ result }:
+{
+  result,
+  logismos,
+}:
 let
   publicNames = {
     single = {
@@ -18,10 +21,23 @@ let
     nodes = 256;
     depth = 64;
   };
+  algebra = logismos.budget.make {
+    dimensions = [
+      "depth"
+      "nodes"
+    ];
+    namedCosts = {
+      node = {
+        depth = 0;
+        nodes = 1;
+      };
+    };
+  };
 in
 {
   names = publicNames;
-  inherit planSpec;
+  inherit planSpec algebra;
+  initial = algebra.zero;
 
   resolve =
     {
@@ -66,14 +82,18 @@ in
       state,
       depth,
     }:
-    if state.consumed < 0 then
+    let
+      valid = algebra.valid state;
+      attempted = if valid then algebra.maximumDepth state depth else state;
+    in
+    if !valid then
       {
         ok = false;
         failure = result.internalBug {
           inherit operation path;
           code = result.codes.budgetUnderflow;
           context = {
-            inherit (state) consumed;
+            consumed = state.nodes or null;
           };
         };
       }
@@ -85,10 +105,10 @@ in
           budget = budgetName;
           dimension = "depth";
           limit = budget.depth;
-          inherit (state) consumed;
+          consumed = state.nodes;
         };
       }
-    else if state.consumed >= budget.nodes then
+    else if state.nodes >= budget.nodes then
       {
         ok = false;
         failure = result.exhausted {
@@ -96,14 +116,12 @@ in
           budget = budgetName;
           dimension = "nodes";
           limit = budget.nodes;
-          inherit (state) consumed;
+          consumed = state.nodes;
         };
       }
     else
       {
         ok = true;
-        state = state // {
-          consumed = state.consumed + 1;
-        };
+        state = algebra.add attempted algebra.namedCosts.node;
       };
 }

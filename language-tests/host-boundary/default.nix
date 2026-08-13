@@ -3,6 +3,37 @@ let
   inherit (language) boundary;
   inherit (boundary) result;
   poison = import ./poison.nix;
+  logismos = import ../../language/logismos;
+  boundaryResult = import ../../language/boundary/result.nix;
+  boundaryBudget = import ../../language/boundary/budget.nix {
+    result = boundaryResult;
+    inherit logismos;
+  };
+  boundaryPolicy = import ../../language/boundary/policy.nix {
+    result = boundaryResult;
+    budget = boundaryBudget;
+    inherit logismos;
+  };
+  cursorProbe = import ../../language/boundary/deep.nix {
+    result = boundaryResult;
+    policy = boundaryPolicy;
+    budget = boundaryBudget;
+    observe.outerAt =
+      operation: path: value:
+      boundaryResult.success {
+        inherit operation path;
+        policy = "outer";
+        category = "list";
+        payload = value;
+      };
+    inherit logismos;
+  };
+  contains = needle: text: builtins.replaceStrings [ needle ] [ "" ] text != text;
+  boundarySources = {
+    deep = builtins.readFile ../../language/boundary/deep.nix;
+    observe = builtins.readFile ../../language/boundary/observe.nix;
+    policy = builtins.readFile ../../language/boundary/policy.nix;
+  };
 
   categoryPlan = category: {
     kind = "category";
@@ -279,6 +310,35 @@ let
     plan = listPlan opaquePlan;
     value = builtins.genList (_index: poison.poison) 256;
   };
+  cursorExactFinal = boundary.observeDeep {
+    name = "standard";
+    plan = listPlan (categoryPlan "int");
+    value = builtins.genList (index: index) 255;
+  };
+  cursorOneOver = boundary.observeDeep {
+    name = "standard";
+    plan = listPlan (categoryPlan "int");
+    value = builtins.genList (index: if index == 255 then poison.poison else index) 256;
+  };
+  cursorUntouchedRemainder = boundary.observeDeep {
+    name = "standard";
+    plan = listPlan (categoryPlan "int");
+    value = builtins.genList (index: if index >= 255 then poison.poison else index) 257;
+  };
+  cursorOrderMismatch = boundary.observeDeep {
+    name = "shallow";
+    plan = listPlan (categoryPlan "int");
+    value = [
+      0
+      "wrong"
+      poison.poison
+    ];
+  };
+  cursorGuardFailure = cursorProbe.run {
+    name = "shallow";
+    plan = listPlan opaquePlan;
+    value = poison.poison;
+  };
   exactStandardDepth = boundary.observeDeep {
     name = "standard";
     plan = nestPlan 32;
@@ -326,7 +386,53 @@ let
     "semantic-dispatch"
   ];
 
+  depthFirstRefusal = boundaryBudget.charge {
+    operation = "probe";
+    path = [ "field:x" ];
+    budgetName = "shallow";
+    budget = boundaryBudget.names.shallow;
+    state = {
+      depth = 4;
+      nodes = 8;
+    };
+    depth = 5;
+  };
+  nodeSecondRefusal = boundaryBudget.charge {
+    operation = "probe";
+    path = [ "field:x" ];
+    budgetName = "shallow";
+    budget = boundaryBudget.names.shallow;
+    state = {
+      depth = 4;
+      nodes = 8;
+    };
+    depth = 4;
+  };
   cases = [
+    {
+      name = "vector refusal keeps depth before nodes";
+      pass =
+        !depthFirstRefusal.ok
+        && depthFirstRefusal.failure.dimension == "depth"
+        && depthFirstRefusal.failure.consumed == 8
+        && depthFirstRefusal.failure.path == [ "field:x" ]
+        && !nodeSecondRefusal.ok
+        && nodeSecondRefusal.failure.dimension == "nodes";
+    }
+    {
+      name = "boundary cursors use ruled Logismos owners";
+      pass =
+        contains "../logismos/stack.nix" boundarySources.deep
+        && contains "inherit (logismos) transition" boundarySources.observe
+        && contains "traversal.fold" boundarySources.policy
+        && contains "remaining = job.value" boundarySources.deep
+        && contains "builtins.tail job.remaining" boundarySources.deep
+        && !(contains "builtins.elemAt job.value" boundarySources.deep)
+        && !(contains "internal/worklist" boundarySources.deep)
+        && !(contains "internal/worklist" boundarySources.observe)
+        && !(contains "internal/spine" boundarySources.deep)
+        && !(contains "internal/spine" boundarySources.observe);
+    }
     {
       name = "public host categories map exactly";
       pass = outerCategoriesPass;
@@ -538,6 +644,39 @@ let
         && overStandardNodes.dimension == "nodes"
         && overStandardNodes.consumed == 256
         && overStandardNodes.path == [ "index:255" ];
+    }
+    {
+      name = "list cursor admits the final budgeted element";
+      pass = cursorExactFinal.kind == "success" && cursorExactFinal.payload.consumed == 256;
+    }
+    {
+      name = "list cursor refuses before inspecting the one-over element";
+      pass =
+        cursorOneOver.kind == "resource-exhaustion"
+        && cursorOneOver.dimension == "nodes"
+        && cursorOneOver.consumed == 256
+        && cursorOneOver.path == [ "index:255" ];
+    }
+    {
+      name = "list cursor leaves the refused remainder untouched";
+      pass =
+        cursorUntouchedRemainder.kind == "resource-exhaustion"
+        && cursorUntouchedRemainder.consumed == 256
+        && cursorUntouchedRemainder.path == [ "index:255" ];
+    }
+    {
+      name = "list cursor order and public index paths remain stable";
+      pass =
+        cursorOrderMismatch.kind == "boundary-mismatch"
+        && cursorOrderMismatch.path == [ "index:1" ]
+        && cursorOrderMismatch.expected == "int"
+        && cursorOrderMismatch.observed == "string";
+    }
+    {
+      name = "guarded list cursor failures are named host failures";
+      pass =
+        cursorGuardFailure.kind == "host-failure"
+        && cursorGuardFailure.guardedOperation == "typed-deep-list-length";
     }
     {
       name = "standard machine depth 32 succeeds";

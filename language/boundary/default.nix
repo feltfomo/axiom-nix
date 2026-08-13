@@ -1,9 +1,17 @@
 let
+  logismos = import ../logismos;
   result = import ./result.nix;
-  budget = import ./budget.nix { inherit result; };
-  policy = import ./policy.nix { inherit result budget; };
+  budget = import ./budget.nix { inherit result logismos; };
+  policy = import ./policy.nix {
+    inherit result budget logismos;
+  };
   observe = import ./observe.nix {
-    inherit result policy budget;
+    inherit
+      result
+      policy
+      budget
+      logismos
+      ;
   };
   deep = import ./deep.nix {
     inherit
@@ -11,6 +19,7 @@ let
       policy
       budget
       observe
+      logismos
       ;
   };
 in

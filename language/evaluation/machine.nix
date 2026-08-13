@@ -2,28 +2,77 @@
   core,
   representation,
   result,
+  budget,
+  logismos,
 }:
 let
-  mergeLimits = supplied: result.limits // supplied;
+  lists = import ../internal/lists.nix;
+  inherit (lists) reverse;
+  transitionAlgebra = logismos.transition;
+  stack = import ../logismos/stack.nix;
+  mergeLimits = result.resolveLimits;
+  termHandlers = {
+    annotation = "annotation";
+    application = "application";
+    "empty-elimination" = "empty-elimination";
+    "empty-type" = "empty-type";
+    "first-projection" = "first-projection";
+    "identity-elimination" = "identity-elimination";
+    "identity-type" = "identity-type";
+    lambda = "lambda";
+    "left-injection" = "left-injection";
+    pair = "pair";
+    pi = "pi";
+    refl = "refl";
+    "right-injection" = "right-injection";
+    "second-projection" = "second-projection";
+    sigma = "sigma";
+    "sum-elimination" = "sum-elimination";
+    "sum-type" = "sum-type";
+    unit = "unit";
+    "unit-elimination" = "unit-elimination";
+    "unit-type" = "unit-type";
+    universe = "universe";
+    variable = "variable";
+  };
+  eliminatorHandlers = {
+    "empty-elimination" = "empty-elimination-scrutinee";
+    "first-projection" = "first-projection-subject";
+    "identity-elimination" = "identity-elimination-scrutinee";
+    "second-projection" = "second-projection-subject";
+    "sum-elimination" = "sum-elimination-scrutinee";
+    "unit-elimination" = "unit-elimination-scrutinee";
+  };
+  frameHandlers = {
+    "apply-operator" = "application";
+    "empty-elimination-scrutinee" = "empty-elimination";
+    "first-projection-subject" = "first-projection";
+    "identity-elimination-scrutinee" = "identity-elimination";
+    "second-projection-subject" = "second-projection";
+    "sum-elimination-scrutinee" = "sum-elimination";
+    "unit-elimination-scrutinee" = "unit-elimination";
+  };
+  authority = {
+    termKinds = builtins.attrNames termHandlers;
+    eliminatorKinds = builtins.attrNames eliminatorHandlers;
+  };
   charge =
     limits: state: depth:
-    if depth > limits.depth then
-      {
-        ok = false;
-        failure = result.exhausted "depth" limits.depth state.nodes;
-      }
-    else if state.nodes >= limits.nodes then
-      {
-        ok = false;
-        failure = result.exhausted "nodes" limits.nodes state.nodes;
-      }
+    let
+      charged = budget.semanticNode {
+        inherit limits depth;
+        inherit (state) usage;
+      };
+    in
+    if !charged.ok then
+      charged
     else
       {
         ok = true;
-        state = result.emit (state // { nodes = state.nodes + 1; }) {
+        state = result.emit (state // { inherit (charged) usage; }) {
           kind = "charge";
           dimension = "node";
-          consumed = state.nodes + 1;
+          consumed = charged.usage.nodes;
           inherit depth;
         };
       };
@@ -109,7 +158,7 @@ let
     state: value:
     if !representation.generationMatches value then
       fail state result.codes.staleSemanticGeneration { }
-    else if state.frames == [ ] then
+    else if stack.isEmpty state.frames then
       state
       // {
         status = "done";
@@ -118,32 +167,33 @@ let
       }
     else
       let
-        frame = builtins.head state.frames;
-        rest = builtins.tail state.frames;
+        frame = stack.top state.frames;
+        rest = stack.pop state.frames;
         resumed = state // {
           frames = rest;
         };
+        frameKind = if builtins.hasAttr frame.kind frameHandlers then frameHandlers.${frame.kind} else null;
       in
       # frame environments are checked before current wrappers can capture them
       if frame ? environment && !representation.generationMatches frame.environment then
         fail resumed result.codes.staleSemanticGeneration { }
-      else if frame.kind == "apply-operator" then
+      else if frameKind == "application" then
         applyValue resumed value frame.argument frame.depth
-      else if frame.kind == "first-projection-subject" then
+      else if frameKind == "first-projection" then
         if value.kind == "pair" then
           demandCell resumed value.first frame.depth
         else if value.kind == "neutral" then
           return resumed (representation.extendNeutral value { kind = "first-projection"; })
         else
           fail resumed result.codes.invalidSemanticValue { kind = value.kind or null; }
-      else if frame.kind == "second-projection-subject" then
+      else if frameKind == "second-projection" then
         if value.kind == "pair" then
           demandCell resumed value.second frame.depth
         else if value.kind == "neutral" then
           return resumed (representation.extendNeutral value { kind = "second-projection"; })
         else
           fail resumed result.codes.invalidSemanticValue { kind = value.kind or null; }
-      else if frame.kind == "sum-elimination-scrutinee" then
+      else if frameKind == "sum-elimination" then
         # raw branches remain inactive until the returned scrutinee selects one
         if value.kind == "left-injection" || value.kind == "right-injection" then
           applyValue resumed (representation.closure frame.environment (
@@ -160,7 +210,7 @@ let
           )
         else
           fail resumed result.codes.invalidSemanticValue { kind = value.kind or null; }
-      else if frame.kind == "unit-elimination-scrutinee" then
+      else if frameKind == "unit-elimination" then
         if value.kind == "unit" then
           eval resumed frame.environment frame.case frame.depth
         else if value.kind == "neutral" then
@@ -173,7 +223,7 @@ let
           )
         else
           fail resumed result.codes.invalidSemanticValue { kind = value.kind or null; }
-      else if frame.kind == "empty-elimination-scrutinee" then
+      else if frameKind == "empty-elimination" then
         if value.kind == "neutral" then
           return resumed (
             representation.extendNeutral value {
@@ -183,7 +233,7 @@ let
           )
         else
           fail resumed result.codes.invalidSemanticValue { kind = value.kind or null; }
-      else if frame.kind == "identity-elimination-scrutinee" then
+      else if frameKind == "identity-elimination" then
         # the refl path supplies only its witness while motive syntax stays untouched
         if value.kind == "refl" then
           applyValue resumed (representation.closure frame.environment frame.reflBranch) value.value
@@ -204,17 +254,23 @@ let
   transition =
     limits: state:
     # fuel refusal happens before control or frame state advances
-    if state.fuel >= limits.fuel then
+    let
+      chargedStep = budget.machineStep {
+        inherit limits;
+        inherit (state) usage;
+      };
+    in
+    if !chargedStep.ok then
       state
       // {
         status = "done";
         control = null;
-        failure = result.exhausted "fuel" limits.fuel state.fuel;
+        inherit (chargedStep) failure;
       }
     else
       let
         fueled = state // {
-          fuel = state.fuel + 1;
+          inherit (chargedStep) usage;
         };
       in
       if fueled.control.kind == "return" then
@@ -227,12 +283,13 @@ let
         let
           c = fueled.control;
           charged = charge limits fueled c.depth;
+          termKind = if builtins.hasAttr c.term.kind termHandlers then termHandlers.${c.term.kind} else null;
           thunk = child: representation.thunkCell c.environment child;
           push =
             frame: term:
             charged.state
             // {
-              frames = [ frame ] ++ charged.state.frames;
+              frames = stack.push frame charged.state.frames;
               control = {
                 kind = "eval";
                 inherit (c) environment;
@@ -248,7 +305,7 @@ let
             control = null;
             inherit (charged) failure;
           }
-        else if c.term.kind == "variable" then
+        else if termKind == "variable" then
           let
             found = representation.lookupEnvironment c.environment c.term.level;
             looked = result.emit charged.state {
@@ -273,85 +330,85 @@ let
               else
                 looked
             ) found.cell c.depth
-        else if c.term.kind == "lambda" then
+        else if termKind == "lambda" then
           return (result.emit charged.state {
             kind = "closure";
             level = c.environment.nextLevel;
           }) (representation.closure c.environment c.term.body)
-        else if c.term.kind == "application" then
+        else if termKind == "application" then
           push {
             kind = "apply-operator";
             argument = thunk c.term.argument;
             depth = c.depth + 1;
           } c.term.function
-        else if c.term.kind == "annotation" then
+        else if termKind == "annotation" then
           eval (result.emit charged.state { kind = "annotation-erased"; }) c.environment c.term.subject (
             c.depth + 1
           )
-        else if c.term.kind == "universe" then
+        else if termKind == "universe" then
           return charged.state (representation.universe c.term.level)
-        else if c.term.kind == "pi" then
+        else if termKind == "pi" then
           return charged.state (
             representation.pi (thunk c.term.domain) (representation.closure c.environment c.term.codomain)
           )
-        else if c.term.kind == "sigma" then
+        else if termKind == "sigma" then
           return charged.state (
             representation.sigma (thunk c.term.domain) (representation.closure c.environment c.term.codomain)
           )
-        else if c.term.kind == "sum-type" then
+        else if termKind == "sum-type" then
           return charged.state (representation.sumType (thunk c.term.left) (thunk c.term.right))
-        else if c.term.kind == "unit-type" then
+        else if termKind == "unit-type" then
           return charged.state representation.unitType
-        else if c.term.kind == "empty-type" then
+        else if termKind == "empty-type" then
           return charged.state representation.emptyType
-        else if c.term.kind == "unit" then
+        else if termKind == "unit" then
           return charged.state representation.unit
-        else if c.term.kind == "pair" then
+        else if termKind == "pair" then
           return charged.state (representation.pair (thunk c.term.first) (thunk c.term.second))
-        else if c.term.kind == "left-injection" then
+        else if termKind == "left-injection" then
           return charged.state (representation.leftInjection (thunk c.term.value))
-        else if c.term.kind == "right-injection" then
+        else if termKind == "right-injection" then
           return charged.state (representation.rightInjection (thunk c.term.value))
-        else if c.term.kind == "identity-type" then
+        else if termKind == "identity-type" then
           return charged.state (
             representation.identityType (thunk c.term.carrier) (thunk c.term.left) (thunk c.term.right)
           )
-        else if c.term.kind == "refl" then
+        else if termKind == "refl" then
           return charged.state (representation.refl (thunk c.term.value))
-        else if c.term.kind == "first-projection" then
+        else if termKind == "first-projection" then
           push {
-            kind = "first-projection-subject";
+            kind = eliminatorHandlers.${termKind};
             depth = c.depth + 1;
           } c.term.pair
-        else if c.term.kind == "second-projection" then
+        else if termKind == "second-projection" then
           push {
-            kind = "second-projection-subject";
+            kind = eliminatorHandlers.${termKind};
             depth = c.depth + 1;
           } c.term.pair
-        else if c.term.kind == "sum-elimination" then
+        else if termKind == "sum-elimination" then
           push {
-            kind = "sum-elimination-scrutinee";
+            kind = eliminatorHandlers.${termKind};
             inherit (c) environment;
             inherit (c.term) motive leftBranch rightBranch;
             depth = c.depth + 1;
           } c.term.scrutinee
-        else if c.term.kind == "unit-elimination" then
+        else if termKind == "unit-elimination" then
           push {
-            kind = "unit-elimination-scrutinee";
+            kind = eliminatorHandlers.${termKind};
             inherit (c) environment;
             inherit (c.term) motive case;
             depth = c.depth + 1;
           } c.term.scrutinee
-        else if c.term.kind == "empty-elimination" then
+        else if termKind == "empty-elimination" then
           push {
-            kind = "empty-elimination-scrutinee";
+            kind = eliminatorHandlers.${termKind};
             inherit (c) environment;
             inherit (c.term) motive;
             depth = c.depth + 1;
           } c.term.scrutinee
-        else if c.term.kind == "identity-elimination" then
+        else if termKind == "identity-elimination" then
           push {
-            kind = "identity-elimination-scrutinee";
+            kind = eliminatorHandlers.${termKind};
             inherit (c) environment;
             inherit (c.term) motive reflBranch;
             depth = c.depth + 1;
@@ -367,9 +424,8 @@ let
       term = root;
       depth = 0;
     };
-    frames = [ ];
-    nodes = 0;
-    fuel = 0;
+    frames = stack.empty;
+    usage = budget.initial;
     trace = [ ];
     terminal = null;
     failure = null;
@@ -380,7 +436,8 @@ let
       limits ? { },
     }:
     let
-      bounded = mergeLimits limits;
+      boundedResult = mergeLimits limits;
+      bounded = boundedResult.value or result.limits;
       initial =
         if
           state.status == "running"
@@ -390,29 +447,28 @@ let
           fail state result.codes.staleSemanticGeneration { }
         else
           state;
-      states = builtins.genericClosure {
-        startSet = [ (initial // { key = 0; }) ];
-        operator =
-          current:
-          if current.status != "running" then
-            [ ]
-          else
-            [ ((transition bounded current) // { key = current.key + 1; }) ];
+      final = transitionAlgebra.run {
+        inherit initial;
+        terminal = current: current.status != "running";
+        step = transition bounded;
       };
-      final = builtins.elemAt states (builtins.length states - 1);
     in
-    if final.failure != null then
+    if !boundedResult.ok then
+      boundedResult.failure
+    else if final.failure != null then
       final.failure
       // {
-        inherit (final) nodes fuel;
-        trace = builtins.foldl' (xs: x: [ x ] ++ xs) [ ] final.trace;
+        nodes = final.usage.nodes;
+        fuel = final.usage.fuel;
+        trace = reverse final.trace;
       }
     else if final.status == "done" && final.terminal != null then
       result.machineSuccess final.terminal final
     else
       (result.internalBug result.codes.impossibleMachineState { inherit (final) status; })
       // {
-        inherit (final) nodes fuel;
+        nodes = final.usage.nodes;
+        fuel = final.usage.fuel;
         trace = [ ];
       };
 in
@@ -432,5 +488,10 @@ in
       }
     else
       result.internalBug result.codes.unknownTerm { inherit admitted; };
-  inherit runState initialState transition;
+  inherit
+    runState
+    initialState
+    transition
+    authority
+    ;
 }

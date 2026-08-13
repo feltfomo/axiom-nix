@@ -3,7 +3,9 @@ let
   core = import ../../language/core;
   evaluation = import ../../language/evaluation { inherit core; };
   inherit (core) representation operations;
-  inherit (evaluation) direct machine projection;
+  inherit (evaluation) direct machine;
+  projection = import ../support/projection.nix { inherit (evaluation) representation result; };
+  stack = import ../../language/logismos/stack.nix;
   r = representation;
   admitted =
     scope: root:
@@ -149,6 +151,22 @@ let
     envelope = admitted 1 (nestAnnotations 5 v);
     limits.depth = 4;
   };
+  directExactNode = direct.evaluate {
+    envelope = admitted 1 (nestAnnotations 7 v);
+    limits.nodes = 8;
+  };
+  directOverNode = direct.evaluate {
+    envelope = admitted 1 (nestAnnotations 8 v);
+    limits.nodes = 8;
+  };
+  directExactDepth = direct.evaluate {
+    envelope = admitted 1 (nestAnnotations 4 v);
+    limits.depth = 4;
+  };
+  directOverDepth = direct.evaluate {
+    envelope = admitted 1 (nestAnnotations 5 v);
+    limits.depth = 4;
+  };
   fuelProbe = machine.evaluate { envelope = admitted 1 (r.application id v); };
   exactFuel = machine.evaluate {
     envelope = admitted 1 (r.application id v);
@@ -201,9 +219,13 @@ let
   };
   machineState = control: frames: {
     status = "running";
-    inherit control frames;
-    nodes = 0;
-    fuel = 0;
+    inherit control;
+    frames = stack.prependWrittenOrder frames stack.empty;
+    usage = {
+      depth = 0;
+      fuel = 0;
+      nodes = 0;
+    };
     trace = [ ];
     terminal = null;
     failure = null;
@@ -372,6 +394,7 @@ let
   };
   forcingRuns = {
     unusedApplication = run 1 (r.application (r.lambda v) omega);
+    selectedRightSum = run 1 (r.sumElimination (r.rightInjection v) omega omega (r.variable 1));
     firstOnly = run 1 (r.firstProjection (r.pair v omega));
     secondOnly = run 1 (r.secondProjection (r.pair omega v));
     selectedSum = run 1 (r.sumElimination (r.leftInjection v) omega (r.variable 1) omega);
@@ -396,6 +419,33 @@ let
       };
     };
   };
+  malformedDirectLimits = direct.evaluate {
+    envelope = admitted 1 v;
+    limits.future = 1;
+  };
+  malformedMachineLimits = machine.evaluate {
+    envelope = admitted 1 v;
+    limits.future = 1;
+  };
+  fuelBeforeControl = machine.runState {
+    state = machineState { kind = "future"; } [ ];
+    limits.fuel = 0;
+  };
+  projectionValueSensitivity = !projection.primitiveEqual { value = 1; } { value = 2; };
+  projectionTraceSensitivity =
+    !projection.traceEqual
+      [
+        {
+          kind = "lookup";
+          level = 0;
+        }
+      ]
+      [
+        {
+          kind = "force";
+          level = 0;
+        }
+      ];
   annotationA = run 1 (r.annotation v (r.lambda (r.variable 1)));
   annotationB = run 1 (r.annotation v (r.application v v));
   semanticKinds = trace: map (event: event.kind) (projection.semanticEvents trace);
@@ -417,6 +467,49 @@ let
       cells."0" = semantic.valueCell (stale (semantic.closure (semantic.initialEnvironment 0) v));
     };
   };
+  contains = needle: text: builtins.replaceStrings [ needle ] [ "" ] text != text;
+  directSource = builtins.readFile ../../language/evaluation/direct.nix;
+  machineSource = builtins.readFile ../../language/evaluation/machine.nix;
+  evaluationDefaultSource = builtins.readFile ../../language/evaluation/default.nix;
+  sharedSources = map builtins.readFile [
+    ../../language/evaluation/budget.nix
+    ../../language/evaluation/representation.nix
+    ../../language/evaluation/result.nix
+    ../../language/evaluation/schema.nix
+  ];
+  admittedKinds = [
+    "annotation"
+    "application"
+    "empty-elimination"
+    "empty-type"
+    "first-projection"
+    "identity-elimination"
+    "identity-type"
+    "lambda"
+    "left-injection"
+    "pair"
+    "pi"
+    "refl"
+    "right-injection"
+    "second-projection"
+    "sigma"
+    "sum-elimination"
+    "sum-type"
+    "unit"
+    "unit-elimination"
+    "unit-type"
+    "universe"
+    "variable"
+  ];
+  eliminatorKinds = [
+    "empty-elimination"
+    "first-projection"
+    "identity-elimination"
+    "second-projection"
+    "sum-elimination"
+    "unit-elimination"
+  ];
+  agreementCorpus = generated ++ constructorRuns ++ builtins.attrValues forcingRuns;
   claimCases = {
     restoredSp3 = [
       "restoredGeneratedAgreement40"
@@ -451,6 +544,8 @@ let
   };
   cases = {
     restoredGeneratedAgreement40 = builtins.length generated == 40 && builtins.all agrees generated;
+    completeAgreementCorpus =
+      builtins.length agreementCorpus > 60 && builtins.all agrees agreementCorpus;
     completeConstructorAgreement =
       builtins.length constructorRuns == 22 && builtins.all agrees constructorRuns;
     exactNodeBoundary = exactNode.ok && exactNode.nodes == 8;
@@ -459,6 +554,24 @@ let
     oneOverDepthBoundary = overDepth.kind == "resource-exhaustion" && overDepth.dimension == "depth";
     exactFuelBoundary = exactFuel.ok && exactFuel.fuel == fuelProbe.fuel;
     oneOverFuelBoundary = overFuel.kind == "resource-exhaustion" && overFuel.dimension == "fuel";
+    directResourceBounds =
+      directExactNode.ok
+      && directExactNode.nodes == 8
+      && directOverNode.kind == "resource-exhaustion"
+      && directOverNode.consumed == 8
+      && directExactDepth.ok
+      && directOverDepth.kind == "resource-exhaustion"
+      && directOverDepth.dimension == "depth";
+    resourceTraceAgreement =
+      projection.traceEqual directOverNode.trace overNode.trace
+      && projection.traceEqual directOverDepth.trace overDepth.trace;
+    malformedLimitsStable =
+      malformedDirectLimits.code == evaluation.result.codes.invalidLimits
+      && malformedMachineLimits.code == evaluation.result.codes.invalidLimits;
+    fuelBeforeControl =
+      fuelBeforeControl.kind == "resource-exhaustion"
+      && fuelBeforeControl.dimension == "fuel"
+      && fuelBeforeControl.consumed == 0;
     duplicatedThunkFuelRefusal =
       duplicatedRefusal.kind == "resource-exhaustion" && duplicatedRefusal.consumed == 64;
     deepAnnotationStackSafe = deepAnnotation.ok && deepAnnotation.nodes == 65;
@@ -526,6 +639,36 @@ let
       && forcingRuns.identityInactive.machine.nodes == 1
       && forcingRuns.reflInactive.machine.nodes == 1
       && unrelatedEnvironment.ok;
+    projectionSensitivity = projectionValueSensitivity && projectionTraceSensitivity;
+    independentEvaluatorAuthority =
+      direct.authority.termKinds == admittedKinds
+      && machine.authority.termKinds == admittedKinds
+      && direct.authority.eliminatorKinds == eliminatorKinds
+      && machine.authority.eliminatorKinds == eliminatorKinds
+      && !(contains "machine.nix" directSource)
+      && !(contains "direct.nix" machineSource)
+      && contains "./direct.nix" evaluationDefaultSource
+      && contains "./machine.nix" evaluationDefaultSource
+      && contains "termHandlers" directSource
+      && contains "eliminatorHandlers" directSource
+      && contains "termHandlers" machineSource
+      && contains "eliminatorHandlers" machineSource
+      && contains "frameHandlers" machineSource
+      && contains "representation.extendNeutral" directSource
+      && contains "representation.extendNeutral" machineSource
+      && builtins.all (
+        source: !(contains "termHandlers" source) && !(contains "eliminatorHandlers" source)
+      ) sharedSources
+      &&
+        builtins.attrNames language == [
+          "boundary"
+          "generation"
+          "syntax"
+        ];
+    existingLogismosStackOwner =
+      contains "../logismos/stack.nix" machineSource
+      && !(contains "inherit value rest" machineSource)
+      && !(contains "internal/worklist" machineSource);
     admittedAnnotationErasure =
       agrees annotationA
       && agrees annotationB
@@ -588,6 +731,9 @@ let
       && projectedSpine.value.spineCount == 1
       && builtins.length projectedSpine.value.spine == 1;
     derivedFixtures = builtins.all agrees derived;
+    evaluationSchemaOwned =
+      builtins.attrNames evaluation.schema.valueFields
+      == builtins.attrNames (import ../../language/evaluation/schema.nix).valueFields;
     generations =
       evaluation.representation.generation == "axiom-evaluation-2"
       && r.generation == "axiom-core-syntax-2";

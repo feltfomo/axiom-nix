@@ -2,8 +2,13 @@
   result,
   policy,
   budget,
+  logismos,
 }:
 let
+  lists = import ../internal/lists.nix;
+  inherit (lists) reverse;
+  inherit (logismos) transition;
+
   outerAt =
     operation: path: value:
     let
@@ -33,9 +38,6 @@ let
           payload = value;
         };
 
-  last = values: builtins.elemAt values (builtins.length values - 1);
-  reverse = values: builtins.foldl' (reversed: value: [ value ] ++ reversed) [ ] values;
-
   meterSpine =
     {
       category,
@@ -45,56 +47,44 @@ let
       budgetSpec,
       state,
     }:
-    let
-      steps = builtins.genericClosure {
-        startSet = [
-          {
-            key = 0;
-            machine = {
-              position = 0;
-              inherit state;
-              failure = null;
-            };
-          }
-        ];
-        operator =
-          item:
-          if item.machine.failure != null || item.machine.position == total then
-            [ ]
-          else
-            let
-              position = item.machine.position;
-              label = if category == "list" then toString position else builtins.elemAt entries position;
-              path = [ "${if category == "list" then "index" else "field"}:${label}" ];
-              charged = budget.charge {
-                operation = "observe-spine";
-                inherit path budgetName;
-                budget = budgetSpec;
-                state = item.machine.state;
-                depth = 1;
-              };
-            in
-            [
-              {
-                key = item.key + 1;
-                machine =
-                  if charged.ok then
-                    {
-                      position = position + 1;
-                      inherit (charged) state;
-                      failure = null;
-                    }
-                  else
-                    {
-                      inherit position;
-                      state = item.machine.state;
-                      inherit (charged) failure;
-                    };
-              }
-            ];
+    transition.run {
+      initial = {
+        status = "running";
+        position = 0;
+        usage = state;
+        failure = null;
       };
-    in
-    (last steps).machine;
+      terminal = current: current.status != "running";
+      step =
+        current:
+        if current.position == total then
+          current // { status = "done"; }
+        else
+          let
+            label =
+              if category == "list" then toString current.position else builtins.elemAt entries current.position;
+            path = [ "${if category == "list" then "index" else "field"}:${label}" ];
+            charged = budget.charge {
+              operation = "observe-spine";
+              inherit path budgetName;
+              budget = budgetSpec;
+              state = current.usage;
+              depth = 1;
+            };
+          in
+          if charged.ok then
+            current
+            // {
+              position = current.position + 1;
+              usage = charged.state;
+            }
+          else
+            current
+            // {
+              status = "failed";
+              inherit (charged) failure;
+            };
+    };
 
   validateSelections =
     {
@@ -102,97 +92,134 @@ let
       budgetName,
       budgetSpec,
       state,
-      index,
-      seen,
-      canonical,
     }:
-    if fields == [ ] then
-      {
-        ok = true;
-        inherit state;
-        canonical = reverse canonical;
-      }
-    else
-      let
-        path = [ "selection:${toString index}" ];
-        charged = budget.charge {
-          operation = "validate-fields";
-          inherit path budgetName;
-          budget = budgetSpec;
-          inherit state;
-          depth = 1;
-        };
-      in
-      if !charged.ok then
-        {
-          ok = false;
-          inherit (charged) failure;
-        }
-      else
+    transition.run {
+      initial = {
+        status = "running";
+        remaining = fields;
+        index = 0;
+        seen = { };
+        canonical = [ ];
+        usage = state;
+        failure = null;
+      };
+      terminal = current: current.status != "running";
+      step =
+        current:
         let
-          inspected = builtins.tryEval (
-            let
-              field = builtins.head fields;
-              valid =
-                builtins.isAttrs field
-                &&
-                  builtins.attrNames field == [
-                    "category"
-                    "name"
-                  ]
-                && builtins.isString field.name
-                && builtins.isString field.category;
-              name = if valid then field.name else "";
-              category = if valid then field.category else "";
-            in
-            builtins.seq valid (
-              builtins.seq name (
-                builtins.seq category {
-                  inherit valid name category;
-                }
-              )
-            )
-          );
+          empty = builtins.tryEval (current.remaining == [ ]);
+          path = [ "selection:${toString current.index}" ];
         in
-        if !inspected.success then
-          {
-            ok = false;
+        if !empty.success then
+          current
+          // {
+            status = "failed";
             failure = result.hostFailure {
               operation = "validate-fields";
               inherit path;
               guardedOperation = "selected-field-specification-validation";
             };
           }
-        else if
-          !inspected.value.valid
-          || !policy.isCategory inspected.value.category
-          || builtins.hasAttr inspected.value.name seen
-        then
-          {
-            ok = false;
-            failure = result.mismatch {
-              operation = "validate-fields";
-              inherit path;
-              expected = "unique-valid-field-selection";
-              observed = "malformed-or-duplicate-selection";
-            };
+        else if empty.value then
+          current
+          // {
+            status = "done";
+            canonical = reverse current.canonical;
           }
         else
-          validateSelections {
-            fields = builtins.tail fields;
-            inherit budgetName budgetSpec;
-            inherit (charged) state;
-            index = index + 1;
-            seen = seen // {
-              "${inspected.value.name}" = true;
+          let
+            charged = budget.charge {
+              operation = "validate-fields";
+              inherit path budgetName;
+              budget = budgetSpec;
+              state = current.usage;
+              depth = 1;
             };
-            canonical = [
-              {
-                inherit (inspected.value) name category;
+          in
+          if !charged.ok then
+            current
+            // {
+              status = "failed";
+              inherit (charged) failure;
+            }
+          else
+            let
+              inspected = builtins.tryEval (
+                let
+                  field = builtins.head current.remaining;
+                  tail = builtins.tail current.remaining;
+                  valid =
+                    builtins.isAttrs field
+                    &&
+                      builtins.attrNames field == [
+                        "category"
+                        "name"
+                      ]
+                    && builtins.isString field.name
+                    && builtins.isString field.category;
+                  name = if valid then field.name else "";
+                  category = if valid then field.category else "";
+                in
+                builtins.seq valid (
+                  builtins.seq name (
+                    builtins.seq category (
+                      builtins.seq tail {
+                        inherit
+                          valid
+                          name
+                          category
+                          tail
+                          ;
+                      }
+                    )
+                  )
+                )
+              );
+            in
+            if !inspected.success then
+              current
+              // {
+                status = "failed";
+                usage = charged.state;
+                failure = result.hostFailure {
+                  operation = "validate-fields";
+                  inherit path;
+                  guardedOperation = "selected-field-specification-validation";
+                };
               }
-            ]
-            ++ canonical;
-          };
+            else if
+              !inspected.value.valid
+              || !policy.isCategory inspected.value.category
+              || builtins.hasAttr inspected.value.name current.seen
+            then
+              current
+              // {
+                status = "failed";
+                usage = charged.state;
+                failure = result.mismatch {
+                  operation = "validate-fields";
+                  inherit path;
+                  expected = "unique-valid-field-selection";
+                  observed = "malformed-or-duplicate-selection";
+                };
+              }
+            else
+              current
+              // {
+                remaining = inspected.value.tail;
+                index = current.index + 1;
+                seen = current.seen // {
+                  "${inspected.value.name}" = true;
+                };
+                canonical = [
+                  {
+                    inherit (inspected.value) name category;
+                  }
+                ]
+                ++ current.canonical;
+                usage = charged.state;
+              };
+    };
 
   observeSelections =
     {
@@ -201,67 +228,91 @@ let
       budgetName,
       budgetSpec,
       state,
-      observations,
     }:
-    if fields == [ ] then
-      result.success {
-        operation = "observe-fields";
-        path = [ ];
-        policy = "selected-fields";
-        category = "attrs";
-        payload = {
-          inherit value;
-          observations = reverse observations;
-          inherit (state) consumed;
-        };
-      }
-    else
-      let
-        field = builtins.head fields;
-        path = [ "field:${field.name}" ];
-        charged = budget.charge {
-          operation = "observe-fields";
-          inherit path budgetName;
-          budget = budgetSpec;
-          inherit state;
-          depth = 1;
-        };
-      in
-      if !charged.ok then
-        charged.failure
-      else if !(builtins.hasAttr field.name value) then
-        result.mismatch {
-          operation = "observe-fields";
-          inherit path;
-          expected = "field:${field.name}";
-          observed = "missing-field";
-        }
-      else
-        let
-          observed = outerAt "observe-fields" path value.${field.name};
-        in
-        if observed.kind != "success" then
-          observed
-        else if observed.category != field.category then
-          result.mismatch {
-            operation = "observe-fields";
-            inherit path;
-            expected = field.category;
-            observed = observed.category;
+    transition.run {
+      initial = {
+        status = "running";
+        remaining = fields;
+        observations = [ ];
+        usage = state;
+        failure = null;
+      };
+      terminal = current: current.status != "running";
+      step =
+        current:
+        if current.remaining == [ ] then
+          current
+          // {
+            status = "done";
+            observations = reverse current.observations;
           }
         else
-          observeSelections {
-            fields = builtins.tail fields;
-            inherit value budgetName budgetSpec;
-            inherit (charged) state;
-            observations = [
-              {
-                inherit (field) name;
-                inherit (observed) category;
+          let
+            field = builtins.head current.remaining;
+            path = [ "field:${field.name}" ];
+            charged = budget.charge {
+              operation = "observe-fields";
+              inherit path budgetName;
+              budget = budgetSpec;
+              state = current.usage;
+              depth = 1;
+            };
+          in
+          if !charged.ok then
+            current
+            // {
+              status = "failed";
+              inherit (charged) failure;
+            }
+          else if !(builtins.hasAttr field.name value) then
+            current
+            // {
+              status = "failed";
+              usage = charged.state;
+              failure = result.mismatch {
+                operation = "observe-fields";
+                inherit path;
+                expected = "field:${field.name}";
+                observed = "missing-field";
+              };
+            }
+          else
+            let
+              observed = outerAt "observe-fields" path value.${field.name};
+            in
+            if observed.kind != "success" then
+              current
+              // {
+                status = "failed";
+                usage = charged.state;
+                failure = observed;
               }
-            ]
-            ++ observations;
-          };
+            else if observed.category != field.category then
+              current
+              // {
+                status = "failed";
+                usage = charged.state;
+                failure = result.mismatch {
+                  operation = "observe-fields";
+                  inherit path;
+                  expected = field.category;
+                  observed = observed.category;
+                };
+              }
+            else
+              current
+              // {
+                remaining = builtins.tail current.remaining;
+                observations = [
+                  {
+                    inherit (field) name;
+                    inherit (observed) category;
+                  }
+                ]
+                ++ current.observations;
+                usage = charged.state;
+              };
+    };
 in
 {
   inherit outerAt;
@@ -290,20 +341,6 @@ in
     in
     if resolved.kind != "success" then
       resolved
-    else if observed.kind != "success" then
-      observed
-    else if
-      !builtins.elem observed.category [
-        "list"
-        "attrs"
-      ]
-    then
-      result.mismatch {
-        operation = "observe-spine";
-        path = [ ];
-        expected = "list-or-attrs";
-        observed = observed.category;
-      }
     else
       let
         root = budget.charge {
@@ -311,51 +348,66 @@ in
           path = [ ];
           budgetName = name;
           budget = resolved.payload;
-          state = {
-            consumed = 0;
-          };
+          state = budget.initial;
           depth = 0;
         };
-        spineAttempt =
-          if observed.category == "list" then
-            builtins.tryEval (builtins.length value)
-          else
-            builtins.tryEval (builtins.attrNames value);
       in
       if !root.ok then
         root.failure
-      else if !spineAttempt.success then
-        result.hostFailure {
+      else if observed.kind != "success" then
+        observed
+      else if
+        !builtins.elem observed.category [
+          "list"
+          "attrs"
+        ]
+      then
+        result.mismatch {
           operation = "observe-spine";
           path = [ ];
-          guardedOperation = if observed.category == "list" then "list-length" else "attr-names";
+          expected = "list-or-attrs";
+          observed = observed.category;
         }
       else
         let
-          total =
-            if observed.category == "list" then spineAttempt.value else builtins.length spineAttempt.value;
-          machine = meterSpine {
-            inherit (observed) category;
-            entries = if observed.category == "list" then [ ] else spineAttempt.value;
-            inherit total;
-            budgetName = name;
-            budgetSpec = resolved.payload;
-            inherit (root) state;
-          };
+          spineAttempt =
+            if observed.category == "list" then
+              builtins.tryEval (builtins.length value)
+            else
+              builtins.tryEval (builtins.attrNames value);
         in
-        if machine.failure != null then
-          machine.failure
-        else
-          result.success {
+        if !spineAttempt.success then
+          result.hostFailure {
             operation = "observe-spine";
             path = [ ];
-            policy = "spine";
-            inherit (observed) category;
-            payload = {
-              size = total;
-              inherit (machine.state) consumed;
+            guardedOperation = if observed.category == "list" then "list-length" else "attr-names";
+          }
+        else
+          let
+            total =
+              if observed.category == "list" then spineAttempt.value else builtins.length spineAttempt.value;
+            machine = meterSpine {
+              inherit (observed) category;
+              entries = if observed.category == "list" then [ ] else spineAttempt.value;
+              inherit total;
+              budgetName = name;
+              budgetSpec = resolved.payload;
+              inherit (root) state;
             };
-          };
+          in
+          if machine.status == "failed" then
+            machine.failure
+          else
+            result.success {
+              operation = "observe-spine";
+              path = [ ];
+              policy = "spine";
+              inherit (observed) category;
+              payload = {
+                size = total;
+                consumed = machine.usage.nodes;
+              };
+            };
 
   fields =
     {
@@ -378,27 +430,22 @@ in
           inherit fields;
           budgetName = name;
           budgetSpec = resolved.payload;
-          state = {
-            consumed = 0;
-          };
-          index = 0;
-          seen = { };
-          canonical = [ ];
+          state = budget.initial;
         };
       in
-      if !validated.ok then
+      if validated.status == "failed" then
         validated.failure
       else
         let
-          observed = outerAt "observe-fields" [ ] value;
           root = budget.charge {
             operation = "observe-fields";
             path = [ ];
             budgetName = name;
             budget = resolved.payload;
-            inherit (validated) state;
+            state = validated.usage;
             depth = 0;
           };
+          observed = if root.ok then outerAt "observe-fields" [ ] value else null;
         in
         if !root.ok then
           root.failure
@@ -412,14 +459,29 @@ in
             observed = observed.category;
           }
         else
-          observeSelections {
-            fields = validated.canonical;
-            inherit value;
-            budgetName = name;
-            budgetSpec = resolved.payload;
-            inherit (root) state;
-            observations = [ ];
-          };
+          let
+            machine = observeSelections {
+              fields = validated.canonical;
+              inherit value;
+              budgetName = name;
+              budgetSpec = resolved.payload;
+              inherit (root) state;
+            };
+          in
+          if machine.status == "failed" then
+            machine.failure
+          else
+            result.success {
+              operation = "observe-fields";
+              path = [ ];
+              policy = "selected-fields";
+              category = "attrs";
+              payload = {
+                inherit value;
+                inherit (machine) observations;
+                consumed = machine.usage.nodes;
+              };
+            };
 
   invoke =
     {

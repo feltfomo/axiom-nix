@@ -3,9 +3,13 @@
   policy,
   budget,
   observe,
+  logismos,
 }:
 let
-  last = values: builtins.elemAt values (builtins.length values - 1);
+  lists = import ../internal/lists.nix;
+  inherit (lists) reverse;
+  inherit (logismos) transition;
+  stack = import ../logismos/stack.nix;
 
   dispatch =
     state: job: rest:
@@ -13,26 +17,29 @@ let
       state
       // {
         pending = rest;
-        category = if job.path == [ ] then null else state.category;
+        category = if job.pathRev == [ ] then null else state.category;
       }
     else
       let
-        observed = observe.outerAt "observe-deep" job.path job.value;
+        path = reverse job.pathRev;
+        observed = observe.outerAt "observe-deep" path job.value;
       in
       if observed.kind != "success" then
         state
         // {
-          pending = [ ];
+          status = "failed";
+          pending = stack.empty;
           failure = observed;
         }
       else if job.plan.kind == "category" then
         if observed.category != job.plan.category then
           state
           // {
-            pending = [ ];
+            status = "failed";
+            pending = stack.empty;
             failure = result.mismatch {
               operation = "observe-deep";
-              inherit (job) path;
+              inherit path;
               expected = job.plan.category;
               observed = observed.category;
             };
@@ -41,16 +48,17 @@ let
           state
           // {
             pending = rest;
-            category = if job.path == [ ] then observed.category else state.category;
+            category = if job.pathRev == [ ] then observed.category else state.category;
           }
       else if job.plan.kind == "list" then
         if observed.category != "list" then
           state
           // {
-            pending = [ ];
+            status = "failed";
+            pending = stack.empty;
             failure = result.mismatch {
               operation = "observe-deep";
-              inherit (job) path;
+              inherit path;
               expected = "list";
               observed = observed.category;
             };
@@ -62,36 +70,36 @@ let
           if !lengthAttempt.success then
             state
             // {
-              pending = [ ];
+              status = "failed";
+              pending = stack.empty;
               failure = result.hostFailure {
                 operation = "observe-deep";
-                inherit (job) path;
+                inherit path;
                 guardedOperation = "typed-deep-list-length";
               };
             }
           else
             state
             // {
-              pending = [
-                {
-                  kind = "list-cursor";
-                  inherit (job) value path depth;
-                  plan = job.plan.element;
-                  index = 0;
-                  length = lengthAttempt.value;
-                }
-              ]
-              ++ rest;
-              category = if job.path == [ ] then "list" else state.category;
+              pending = stack.push {
+                kind = "list-cursor";
+                remaining = job.value;
+                inherit (job) depth pathRev;
+                plan = job.plan.element;
+                index = 0;
+                length = lengthAttempt.value;
+              } rest;
+              category = if job.pathRev == [ ] then "list" else state.category;
             }
       else if job.plan.kind == "attrs" then
         if observed.category != "attrs" then
           state
           // {
-            pending = [ ];
+            status = "failed";
+            pending = stack.empty;
             failure = result.mismatch {
               operation = "observe-deep";
-              inherit (job) path;
+              inherit path;
               expected = "attrs";
               observed = observed.category;
             };
@@ -99,24 +107,22 @@ let
         else
           state
           // {
-            pending = [
-              {
-                kind = "attrs-cursor";
-                inherit (job) value path depth;
-                fields = job.plan.fields;
-                position = 0;
-              }
-            ]
-            ++ rest;
-            category = if job.path == [ ] then "attrs" else state.category;
+            pending = stack.push {
+              kind = "attrs-cursor";
+              inherit (job) value depth pathRev;
+              fields = job.plan.fields;
+              position = 0;
+            } rest;
+            category = if job.pathRev == [ ] then "attrs" else state.category;
           }
       else
         state
         // {
-          pending = [ ];
+          status = "failed";
+          pending = stack.empty;
           failure = result.internalBug {
             operation = "observe-deep";
-            inherit (job) path;
+            inherit path;
             code = result.codes.unknownPlanDispatch;
             context = {
               kind = job.plan.kind;
@@ -127,27 +133,79 @@ let
   step =
     state:
     let
-      job = builtins.head state.pending;
-      rest = builtins.tail state.pending;
+      job = stack.top state.pending;
+      rest = stack.pop state.pending;
     in
     if job.kind == "list-cursor" then
       if job.index == job.length then
         state // { pending = rest; }
       else
-        state
-        // {
-          pending = [
-            {
-              kind = "node";
-              inherit (job) plan;
-              value = builtins.elemAt job.value job.index;
-              path = job.path ++ [ "index:${toString job.index}" ];
-              depth = job.depth + 1;
+        let
+          pathRev = [ "index:${toString job.index}" ] ++ job.pathRev;
+          path = reverse pathRev;
+          depth = job.depth + 1;
+          charged = budget.charge {
+            operation = "observe-deep";
+            inherit path;
+            inherit (state) budgetName budget;
+            state = state.usage;
+            inherit depth;
+          };
+        in
+        if !charged.ok then
+          state
+          // {
+            status = "failed";
+            pending = stack.empty;
+            inherit (charged) failure;
+          }
+        else
+          let
+            inspected = builtins.tryEval (
+              let
+                tail = builtins.tail job.remaining;
+              in
+              builtins.seq tail {
+                value = builtins.head job.remaining;
+                inherit tail;
+              }
+            );
+          in
+          if !inspected.success then
+            state
+            // {
+              status = "failed";
+              usage = charged.state;
+              pending = stack.empty;
+              failure = result.hostFailure {
+                operation = "observe-deep";
+                inherit path;
+                guardedOperation = "typed-deep-list-cursor";
+              };
             }
-            (job // { index = job.index + 1; })
-          ]
-          ++ rest;
-        }
+          else
+            state
+            // {
+              usage = charged.state;
+              pending =
+                stack.push
+                  {
+                    kind = "node";
+                    charged = true;
+                    inherit (job) plan;
+                    value = inspected.value.value;
+                    inherit pathRev depth;
+                  }
+                  (
+                    stack.push (
+                      job
+                      // {
+                        remaining = inspected.value.tail;
+                        index = job.index + 1;
+                      }
+                    ) rest
+                  );
+            }
     else if job.kind == "attrs-cursor" then
       if job.position == builtins.length job.fields then
         state // { pending = rest; }
@@ -157,64 +215,71 @@ let
         in
         state
         // {
-          pending = [
-            {
-              kind = "field-node";
-              inherit field;
-              inherit (job) value;
-              path = job.path ++ [ "field:${field.name}" ];
-              depth = job.depth + 1;
-            }
-            (job // { position = job.position + 1; })
-          ]
-          ++ rest;
+          pending = stack.push {
+            kind = "field-node";
+            inherit field;
+            inherit (job) value;
+            pathRev = [ "field:${field.name}" ] ++ job.pathRev;
+            depth = job.depth + 1;
+          } (stack.push (job // { position = job.position + 1; }) rest);
         }
     else
       let
-        charged = budget.charge {
-          operation = "observe-deep";
-          inherit (job) path depth;
-          inherit (state) budgetName;
-          inherit (state) budget;
-          state = { inherit (state) consumed; };
-        };
+        path = reverse job.pathRev;
+        charged =
+          if job.charged or false then
+            {
+              ok = true;
+              state = state.usage;
+            }
+          else
+            budget.charge {
+              operation = "observe-deep";
+              inherit path;
+              inherit (state) budgetName budget;
+              state = state.usage;
+              inherit (job) depth;
+            };
       in
       if !charged.ok then
         state
         // {
-          pending = [ ];
+          status = "failed";
+          pending = stack.empty;
           inherit (charged) failure;
         }
       else if job.kind == "field-node" then
         if !(builtins.hasAttr job.field.name job.value) then
           state
           // {
-            consumed = charged.state.consumed;
-            pending = [ ];
+            status = "failed";
+            usage = charged.state;
+            pending = stack.empty;
             failure = result.mismatch {
               operation = "observe-deep";
-              inherit (job) path;
+              inherit path;
               expected = "field:${job.field.name}";
               observed = "missing-field";
             };
           }
         else
-          dispatch (state // { consumed = charged.state.consumed; }) {
+          dispatch (state // { usage = charged.state; }) {
             kind = "node";
             plan = job.field.plan;
             value = job.value.${job.field.name};
-            inherit (job) path depth;
+            inherit (job) pathRev depth;
           } rest
       else if job.kind == "node" then
-        dispatch (state // { consumed = charged.state.consumed; }) job rest
+        dispatch (state // { usage = charged.state; }) job rest
       else
         state
         // {
-          consumed = charged.state.consumed;
-          pending = [ ];
+          status = "failed";
+          usage = charged.state;
+          pending = stack.empty;
           failure = result.internalBug {
             operation = "observe-deep";
-            inherit (job) path;
+            inherit path;
             code = result.codes.impossibleTraversal;
             context = { inherit (job) kind; };
           };
@@ -227,42 +292,24 @@ let
       plan,
       value,
     }:
-    let
-      states = builtins.genericClosure {
-        startSet = [
-          {
-            key = 0;
-            machine = {
-              pending = [
-                {
-                  kind = "node";
-                  inherit plan value;
-                  path = [ ];
-                  depth = 0;
-                }
-              ];
-              consumed = 0;
-              failure = null;
-              category = null;
-              budgetName = name;
-              budget = spec;
-            };
-          }
-        ];
-        operator =
-          item:
-          if item.machine.failure != null || item.machine.pending == [ ] then
-            [ ]
-          else
-            [
-              {
-                key = item.key + 1;
-                machine = step item.machine;
-              }
-            ];
+    transition.run {
+      initial = {
+        status = "running";
+        pending = stack.push {
+          kind = "node";
+          inherit plan value;
+          pathRev = [ ];
+          depth = 0;
+        } stack.empty;
+        usage = budget.initial;
+        failure = null;
+        category = null;
+        budgetName = name;
+        budget = spec;
       };
-    in
-    (last states).machine;
+      terminal = state: state.status != "running" || stack.isEmpty state.pending;
+      inherit step;
+    };
 in
 {
   run =
@@ -291,7 +338,7 @@ in
           plan = validated.payload;
         };
       in
-      if machine.failure != null then
+      if machine.status == "failed" then
         machine.failure
       else
         result.success {
@@ -301,7 +348,7 @@ in
           inherit (machine) category;
           payload = {
             inherit value;
-            inherit (machine) consumed;
+            consumed = machine.usage.nodes;
           };
         };
 }
