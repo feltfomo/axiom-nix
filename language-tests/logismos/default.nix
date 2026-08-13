@@ -126,6 +126,17 @@ let
       )) (_value: poison.poison)
     )
   );
+  runtimeProducedBeforeOlder = execute (
+    computation.bind (computation.bind (computation.pure null) (
+      _unit: computation.bind (emit "runtime-a") (_next: emit "runtime-b")
+    )) (_unit: emit "older")
+  );
+  runtimeProducedFailure = execute (
+    computation.bind (computation.bind (computation.pure null) (
+      _unit:
+      computation.bind (emit "runtime-before-failure") (_next: computation.fail poison.opaqueFailure)
+    )) (_unit: poison.poison)
+  );
   deepProgram = builtins.foldl' (
     program: _index: computation.bind program (value: computation.pure (value + 1))
   ) (computation.pure 0) (builtins.genList (index: index) 10000);
@@ -273,67 +284,128 @@ let
       }
     ];
   };
-  treeFold = execute (
+  treeState = remaining: {
+    inherit remaining;
+    consumed = 0;
+    trace = [ ];
+  };
+  treeInspect =
+    { frame, state }:
+    if state.remaining == 0 then
+      {
+        ok = false;
+        failure = poison.opaqueFailure;
+        inherit state;
+      }
+    else
+      {
+        ok = true;
+        inherit (frame) kind children;
+        descriptor = frame;
+        state = state // {
+          remaining = state.remaining - 1;
+          consumed = state.consumed + 1;
+          trace = state.trace ++ [ "inspect-${frame.kind}" ];
+        };
+      };
+  valueReduce =
+    {
+      descriptor,
+      children,
+      state,
+      ...
+    }:
+    {
+      ok = true;
+      value =
+        if descriptor.kind == "leaf" then
+          descriptor.value
+        else
+          builtins.elemAt children 0 + builtins.elemAt children 1;
+      state = state // {
+        trace = state.trace ++ [ "reduce-${descriptor.kind}" ];
+      };
+    };
+  foldTree =
+    limit: reduce: root:
     traversal.fold {
       kinds = [
         "leaf"
         "pair"
       ];
-      handlers = {
-        leaf = node: _children: {
-          total = node.value;
-          order = [ node.label ];
+      inherit root reduce;
+      state = treeState limit;
+      inspect = treeInspect;
+      invalidInventory = poison.opaqueFailure;
+    };
+  treeFold = execute (
+    foldTree 3 (
+      {
+        descriptor,
+        children,
+        state,
+        ...
+      }:
+      {
+        ok = true;
+        value =
+          if descriptor.kind == "leaf" then
+            {
+              total = descriptor.value;
+              order = [ descriptor.label ];
+            }
+          else
+            {
+              total = (builtins.elemAt children 0).total + (builtins.elemAt children 1).total;
+              order = (builtins.elemAt children 0).order ++ (builtins.elemAt children 1).order;
+            };
+        state = state // {
+          trace = state.trace ++ [ "reduce-${descriptor.kind}" ];
         };
-        pair = _node: children: {
-          total = (builtins.elemAt children 0).total + (builtins.elemAt children 1).total;
-          order = (builtins.elemAt children 0).order ++ (builtins.elemAt children 1).order;
-        };
-      };
-      root = tree;
-      limit = 3;
-      refusal = poison.opaqueFailure;
-    }
+      }
+    ) tree
   );
-  treeExact = execute (
-    traversal.bounded {
-      kinds = [
-        "leaf"
-        "pair"
-      ];
-      handlers = {
-        leaf = node: _children: node.value;
-        pair = _node: children: builtins.elemAt children 0 + builtins.elemAt children 1;
-      };
-      root = tree;
-      limit = 3;
-      refusal = poison.opaqueFailure;
-    }
-  );
-  treeOver = execute (
-    traversal.bounded {
-      kinds = [
-        "leaf"
-        "pair"
-      ];
-      handlers = {
-        leaf = node: _children: node.value;
-        pair = _node: children: builtins.elemAt children 0 + builtins.elemAt children 1;
-      };
-      root = tree;
-      limit = 2;
-      refusal = poison.opaqueFailure;
-    }
-  );
-  refusalBeforeInspection = execute (
-    traversal.bounded {
+  treeExact = execute (foldTree 3 valueReduce tree);
+  treeOver = execute (foldTree 2 valueReduce tree);
+  refusalBeforeInspection = execute (foldTree 0 valueReduce poison.poison);
+  laterSiblingTree = {
+    kind = "pair";
+    children = [
+      {
+        kind = "leaf";
+        children = [ ];
+        value = 1;
+      }
+      poison.poison
+    ];
+  };
+  refusalBeforeLaterSibling = execute (foldTree 2 valueReduce laterSiblingTree);
+  inspectionFailure = execute (
+    traversal.fold {
       kinds = [ "leaf" ];
-      handlers = {
-        leaf = node: _children: node.value;
+      root = tree;
+      state = treeState 1;
+      inspect = args: {
+        ok = false;
+        failure = poison.opaqueFailure;
+        inherit (args) state;
       };
-      root = poison.poison;
-      limit = 0;
-      refusal = poison.opaqueFailure;
+      reduce = _args: poison.poison;
+      invalidInventory = poison.opaqueFailure;
     }
+  );
+  reductionFailure = execute (
+    foldTree 3 (
+      args:
+      if args.descriptor.kind == "pair" then
+        {
+          ok = false;
+          failure = poison.opaqueFailure;
+          inherit (args) state;
+        }
+      else
+        valueReduce args
+    ) tree
   );
   rewritten = execute (
     traversal.rewrite {
@@ -342,9 +414,87 @@ let
         "pair"
       ];
       root = tree;
-      limit = 3;
-      refusal = poison.opaqueFailure;
-      rewriteNode = node: if node.kind == "leaf" then node // { value = node.value + 1; } else node;
+      state = treeState 3;
+      inspect = treeInspect;
+      invalidInventory = poison.opaqueFailure;
+      rewriteNode =
+        {
+          descriptor,
+          children,
+          state,
+        }:
+        {
+          ok = true;
+          value =
+            if descriptor.kind == "leaf" then
+              descriptor // { value = descriptor.value + 1; }
+            else
+              descriptor // { inherit children; };
+          inherit state;
+        };
+    }
+  );
+  deepTree =
+    builtins.foldl'
+      (child: _index: {
+        kind = "branch";
+        children = [ child ];
+      })
+      {
+        kind = "leaf";
+        children = [ ];
+        value = 1;
+      }
+      (builtins.genList (index: index) 9999);
+  deepTraversal = execute (
+    traversal.fold {
+      kinds = [
+        "branch"
+        "leaf"
+      ];
+      root = deepTree;
+      state = treeState 10000;
+      inspect = treeInspect;
+      invalidInventory = poison.opaqueFailure;
+      reduce =
+        {
+          descriptor,
+          children,
+          state,
+          ...
+        }:
+        {
+          ok = true;
+          value = if descriptor.kind == "leaf" then descriptor.value else builtins.head children + 1;
+          inherit state;
+        };
+    }
+  );
+  whnfLazyFold = execute (
+    traversal.fold {
+      kinds = [ "leaf" ];
+      root = {
+        kind = "leaf";
+        children = [ ];
+        value = 1;
+      };
+      state = {
+        remaining = 1;
+        consumed = 0;
+        trace = [ ];
+        marker = "caller";
+        inactive = poison.poison;
+      };
+      inspect = treeInspect;
+      invalidInventory = poison.opaqueFailure;
+      reduce = args: {
+        ok = true;
+        value = {
+          active = args.descriptor.value;
+          inactive = poison.poison;
+        };
+        inherit (args) state;
+      };
     }
   );
   zipped = execute (
@@ -481,22 +631,15 @@ let
   contains = needle: text: builtins.replaceStrings [ needle ] [ "" ] text != text;
   computationSource = builtins.readFile ../../language/logismos/computation.nix;
   relationSource = builtins.readFile ../../language/logismos/relation.nix;
+  stackSource = builtins.readFile ../../language/logismos/stack.nix;
+  transitionSource = builtins.readFile ../../language/logismos/transition.nix;
   traversalSource = builtins.readFile ../../language/logismos/traversal.nix;
-  testSource = builtins.readFile ./default.nix;
   logismosExports = builtins.attrNames logismos;
   computationExports = builtins.attrNames computation;
   relationExports = builtins.attrNames relation;
   transitionExports = builtins.attrNames transition;
   traversalExports = builtins.attrNames traversal;
   budgetExports = builtins.attrNames logismos.budget;
-  privateOkSelector = builtins.concatStringsSep "" [
-    ".o"
-    "k"
-  ];
-  privateStateSelector = builtins.concatStringsSep "" [
-    ".sta"
-    "te"
-  ];
 
   cases = {
     computationLeftIdentity = leftIdentityLeft == leftIdentityRight;
@@ -507,6 +650,16 @@ let
     mapComposition = mapCompositionLeft == mapCompositionRight;
     failedContinuationLazy = failureLeftZero.opaqueFailure == poison.opaqueFailure;
     runtimeFailureLazy = runtimeFailure.branch == "failure";
+    runtimeProducedInstructionsFirst =
+      runtimeProducedBeforeOlder.finalState.order == [
+        "runtime-a"
+        "runtime-b"
+        "older"
+      ];
+    runtimeProducedFailureLazy =
+      runtimeProducedFailure.branch == "failure"
+      && runtimeProducedFailure.opaqueFailure == poison.opaqueFailure
+      && runtimeProducedFailure.finalState.order == [ "runtime-before-failure" ];
     stateAtFailure =
       failureState.finalState == {
         count = 1;
@@ -596,9 +749,24 @@ let
           "right"
         ];
       };
-    exactBound = treeExact.branch == "success" && treeExact.payload.consumed == 3;
+    exactBound = treeExact.branch == "success" && treeExact.payload.callerState.consumed == 3;
     overBound = treeOver.branch == "failure";
     noInspectionAfterRefusal = refusalBeforeInspection.branch == "failure";
+    noInspectionOfLaterSibling = refusalBeforeLaterSibling.branch == "failure";
+    resultBearingInspectionFailure = inspectionFailure.branch == "failure";
+    resultBearingReductionFailure = reductionFailure.branch == "failure";
+    opaqueTraversalState =
+      treeFold.payload.callerState.trace == [
+        "inspect-pair"
+        "inspect-leaf"
+        "reduce-leaf"
+        "inspect-leaf"
+        "reduce-leaf"
+        "reduce-pair"
+      ];
+    deepTraversal = deepTraversal.payload.value == 10000;
+    whnfOnlyReductionForcing =
+      whnfLazyFold.payload.value.active == 1 && whnfLazyFold.payload.callerState.marker == "caller";
     rewrite = (builtins.elemAt rewritten.payload.value.children 0).value == 3;
     zipFold = zipped.branch == "success" && builtins.length zipped.payload == 3;
     zipMismatch = zipMismatch.branch == "failure";
@@ -682,6 +850,12 @@ let
         "rewrite"
         "zipFold"
       ];
+    foldSuccessPayloadShape =
+      builtins.attrNames treeFold.payload == [
+        "callerState"
+        "value"
+      ];
+    privateStackNotExported = !(logismos ? stack);
     budgetExportSet = budgetExports == [ "make" ];
     closedInstructions =
       contains ''kind = "bind"'' computationSource
@@ -692,12 +866,16 @@ let
       contains "instructions = [" computationSource
       && contains "++ computation.instructions;" computationSource
       && !(contains "computation.instructions ++" computationSource);
+    persistentRuntimeStacks =
+      contains "inherit value rest;" stackSource
+      && !(contains "builtins.tail" stackSource)
+      && !(contains "builtins.tail" computationSource)
+      && !(contains "builtins.tail" transitionSource)
+      && !(contains "builtins.tail" traversalSource);
     relationUsesCarrier =
       contains "bind (leftRelation" relationSource && contains "traverse" relationSource;
     traversalUsesCarrier =
       contains "computation.traverse" traversalSource && contains "computation.fail" traversalSource;
-    clientsAvoidPrivateResults =
-      !(contains privateOkSelector testSource) && !(contains privateStateSelector testSource);
   };
   failed = builtins.filter (name: !cases.${name}) (builtins.attrNames cases);
   ok =

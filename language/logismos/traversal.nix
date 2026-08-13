@@ -1,113 +1,142 @@
-{ computation, transition }:
+{
+  computation,
+  transition,
+  stack,
+}:
 let
-  reverse = builtins.foldl' (values: value: [ value ] ++ values) [ ];
-  exactHandlers =
-    kinds: handlers: builtins.attrNames handlers == builtins.sort builtins.lessThan kinds;
-  take = count: values: builtins.genList (index: builtins.elemAt values index) count;
-  drop =
-    count: values:
-    builtins.genList (index: builtins.elemAt values (index + count)) (builtins.length values - count);
-
+  closed =
+    kinds:
+    builtins.length kinds == builtins.length (
+      builtins.attrNames (
+        builtins.listToAttrs (
+          map (kind: {
+            name = kind;
+            value = true;
+          }) kinds
+        )
+      )
+    );
   fold =
     {
       kinds,
-      handlers,
       root,
-      limit,
-      refusal,
+      state,
+      inspect,
+      reduce,
+      invalidInventory,
     }:
-    if !exactHandlers kinds handlers then
-      computation.fail refusal
+    if !closed kinds then
+      computation.fail invalidInventory
     else
       let
         final = transition.run {
           initial = {
             status = "running";
-            instructions = [
-              {
-                kind = "visit";
-                node = root;
-              }
-            ];
-            values = [ ];
-            consumed = 0;
+            instructions = stack.push {
+              kind = "visit";
+              frame = root;
+            } stack.empty;
+            values = stack.empty;
+            callerState = state;
             failure = null;
           };
-          terminal = state: state.status != "running";
+          terminal = current: current.status != "running";
           step =
-            state:
-            if state.instructions == [ ] then
-              state // { status = "done"; }
+            current:
+            if stack.isEmpty current.instructions then
+              current // { status = "done"; }
             else
               let
-                instruction = builtins.head state.instructions;
-                remaining = builtins.tail state.instructions;
-              in
-              if instruction.kind == "visit" then
-                # refusal happens before the protected node is read
-                if state.consumed >= limit then
-                  state
+                instruction = stack.top current.instructions;
+                remaining = stack.pop current.instructions;
+                refuse =
+                  failure: callerState:
+                  current
                   // {
                     status = "refused";
-                    failure = refusal;
-                    instructions = [ ];
-                  }
+                    instructions = stack.empty;
+                    inherit failure callerState;
+                  };
+              in
+              if instruction.kind == "visit" then
+                let
+                  inspected = inspect {
+                    inherit (instruction) frame;
+                    state = current.callerState;
+                  };
+                in
+                if !inspected.ok then
+                  refuse inspected.failure inspected.state
+                else if !(builtins.elem inspected.kind kinds) || !(builtins.isList inspected.children) then
+                  refuse invalidInventory inspected.state
                 else
-                  let
-                    inherit (instruction) node;
-                    admitted = builtins.elem node.kind kinds;
-                    inherit (node) children;
-                  in
-                  if !admitted then
-                    state
-                    // {
-                      status = "refused";
-                      failure = refusal;
-                      instructions = [ ];
-                    }
-                  else
-                    state
-                    // {
-                      consumed = state.consumed + 1;
-                      # children keep declaration order and reduce only after the last child
-                      instructions =
-                        map (child: {
-                          kind = "visit";
-                          node = child;
-                        }) children
-                        ++ [
-                          {
-                            kind = "reduce";
-                            inherit node;
-                            childCount = builtins.length children;
-                          }
-                        ]
-                        ++ remaining;
-                    }
+                  current
+                  // {
+                    callerState = inspected.state;
+                    # children stay in declaration order and reduction follows the final child
+                    instructions = stack.prependWrittenOrder (
+                      map (frame: {
+                        kind = "visit";
+                        inherit frame;
+                      }) inspected.children
+                      ++ [
+                        {
+                          kind = "reduce";
+                          nodeKind = inspected.kind;
+                          inherit (inspected) descriptor;
+                          remainingChildren = builtins.length inspected.children;
+                          children = [ ];
+                        }
+                      ]
+                    ) remaining;
+                  }
+              else if instruction.remainingChildren > 0 then
+                if stack.isEmpty current.values then
+                  refuse invalidInventory current.callerState
+                else
+                  current
+                  // {
+                    values = stack.pop current.values;
+                    instructions = stack.push (
+                      instruction
+                      // {
+                        remainingChildren = instruction.remainingChildren - 1;
+                        children = [ (stack.top current.values) ] ++ instruction.children;
+                      }
+                    ) remaining;
+                  }
               else
                 let
-                  newestChildren = take instruction.childCount state.values;
-                  olderValues = drop instruction.childCount state.values;
-                  value = handlers.${instruction.node.kind} instruction.node (reverse newestChildren);
+                  reduced = reduce {
+                    kind = instruction.nodeKind;
+                    inherit (instruction) descriptor children;
+                    state = current.callerState;
+                  };
                 in
-                state
-                // {
-                  values = [ value ] ++ olderValues;
-                  instructions = remaining;
-                };
+                if !reduced.ok then
+                  refuse reduced.failure reduced.state
+                else
+                  # successful reduction roots are WHNF-strict between transitions; caller state stays opaque
+                  builtins.seq reduced.value (
+                    current
+                    // {
+                      callerState = reduced.state;
+                      values = stack.push reduced.value current.values;
+                      instructions = remaining;
+                    }
+                  );
         };
       in
-      if final.status == "refused" then
-        computation.fail final.failure
+      if final.status == "refused" || stack.isEmpty final.values then
+        computation.fail (if final.status == "refused" then final.failure else invalidInventory)
       else
         computation.pure {
-          value = builtins.head final.values;
-          inherit (final) consumed;
+          value = stack.top final.values;
+          inherit (final) callerState;
         };
 in
 {
   inherit fold;
-
   zipFold =
     {
       left,
@@ -121,29 +150,31 @@ in
       computation.traverse (index: combine (builtins.elemAt left index) (builtins.elemAt right index)) (
         builtins.genList (index: index) (builtins.length left)
       );
-
   rewrite =
     {
       kinds,
       root,
-      limit,
-      refusal,
+      state,
+      inspect,
       rewriteNode,
+      invalidInventory,
     }:
     fold {
       inherit
         kinds
         root
-        limit
-        refusal
+        state
+        inspect
+        invalidInventory
         ;
-      handlers = builtins.listToAttrs (
-        map (kind: {
-          name = kind;
-          value = node: children: rewriteNode (node // { inherit children; });
-        }) kinds
-      );
+      reduce =
+        {
+          descriptor,
+          children,
+          state,
+          ...
+        }:
+        rewriteNode { inherit descriptor children state; };
     };
-
   bounded = fold;
 }

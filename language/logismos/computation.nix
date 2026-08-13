@@ -1,3 +1,4 @@
+{ stack }:
 let
   reverse = builtins.foldl' (values: value: [ value ] ++ values) [ ];
   last = values: builtins.elemAt values (builtins.length values - 1);
@@ -75,8 +76,12 @@ let
         status = if computation.seed.kind == "success" then "running" else "failure";
         current = if computation.seed.kind == "success" then computation.seed.value else null;
         failure = if computation.seed.kind == "failure" then computation.seed.failure else null;
-        # bind stores backwards, so this is the one reversal into written order
-        worklist = if computation.seed.kind == "success" then reverse computation.instructions else [ ];
+        # bind stores backwards, so this is the one conversion into written runtime order
+        worklist =
+          if computation.seed.kind == "success" then
+            stack.fromNewestFirst computation.instructions
+          else
+            stack.empty;
         inherit reader state;
       };
       # deep pipelines stay off the nix call stack at the cost of one retained state per step
@@ -87,7 +92,7 @@ let
             current:
             if current.status != "running" then
               [ ]
-            else if current.worklist == [ ] then
+            else if stack.isEmpty current.worklist then
               [
                 (
                   current
@@ -99,8 +104,8 @@ let
               ]
             else
               let
-                instruction = builtins.head current.worklist;
-                remaining = builtins.tail current.worklist;
+                instruction = stack.top current.worklist;
+                remaining = stack.pop current.worklist;
                 advanced =
                   if instruction.kind == "reader" then
                     current
@@ -131,14 +136,14 @@ let
                       // {
                         status = "failure";
                         failure = produced.seed.failure;
-                        worklist = [ ];
+                        worklist = stack.empty;
                       }
                     else
-                      # a returned program runs in its own written order before the older tail
+                      # a returned program runs in written order before the older persistent tail
                       current
                       // {
                         current = produced.seed.value;
-                        worklist = reverse produced.instructions ++ remaining;
+                        worklist = stack.prependNewestFirst produced.instructions remaining;
                       }
                   else
                     throw "logismos internal instruction kind";

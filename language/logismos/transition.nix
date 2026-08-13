@@ -1,5 +1,5 @@
+{ stack }:
 let
-  reverse = builtins.foldl' (values: value: [ value ] ++ values) [ ];
   last = values: builtins.elemAt values (builtins.length values - 1);
   run =
     {
@@ -33,13 +33,13 @@ in
     run {
       initial = {
         value = initial;
-        # spines are newest-first in storage but eliminations run oldest-first
-        remaining = reverse spine;
+        # spines are newest-first in storage but the runtime stack exposes the oldest item first
+        remaining = stack.fromNewestFirst spine;
       };
-      terminal = state: state.remaining == [ ];
+      terminal = state: stack.isEmpty state.remaining;
       step = state: {
-        value = step state.value (builtins.head state.remaining);
-        remaining = builtins.tail state.remaining;
+        value = step state.value (stack.top state.remaining);
+        remaining = stack.pop state.remaining;
       };
     };
 }

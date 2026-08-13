@@ -1,6 +1,9 @@
 { core }:
 let
   inherit (core) levels representation;
+  semilattice = levels.joinSemilattice;
+  levelSource = builtins.readFile ../../language/core/levels.nix;
+  contains = needle: text: builtins.replaceStrings [ needle ] [ "" ] text != text;
   z = representation.levelZero;
   s = representation.levelSuc;
   m = representation.levelMax;
@@ -34,18 +37,58 @@ let
     consumed = 0;
     depth = 65;
   };
+  missingKind = levels.normalize { };
+  nonStringKind = levels.normalize { kind = 1; };
+  throwingKind = levels.normalize { kind = poison; };
+  unknownKind = levels.normalize { kind = "future"; };
+  refusalBeforePoisonedPayload = levels.normalizeInput {
+    value = {
+      kind = "suc";
+      level = poison;
+    };
+    consumed = 255;
+    depth = 0;
+  };
   sharedUniverses = core.operations.admitted (
     representation.envelope 0 (representation.pair (representation.universe z) (
       representation.universe (s z)
     )) [ ]
   );
   cases = {
+    semilatticeExportSet =
+      builtins.attrNames semilattice == [
+        "canonicalize"
+        "equal"
+        "height"
+        "join"
+        "requireExact"
+        "successor"
+        "zero"
+      ];
+    representationBacked =
+      contains "zero = representation.levelZero" levelSource
+      && contains "suc = representation.levelSuc" levelSource
+      && contains "max = representation.levelMax" levelSource;
+    sharedAlgebra =
+      semilattice.zero == levels.zero
+      && semilattice.equal (semilattice.join z (s z)).value (levels.maximum z (s z)).value
+      && semilattice.equal (semilattice.canonicalize (s z)).value (levels.normalize (s z)).value
+      && (semilattice.height (s (s z))).value == 2;
     exactCombinedInputNodes = exactCombinedNodes.ok && exactCombinedNodes.consumed == 256;
     oneOverCombinedInputNodes =
       !overCombinedNodes.ok && overCombinedNodes.detail == "nodes" && overCombinedNodes.consumed == 256;
     exactCombinedInputDepth = exactCombinedDepth.ok;
     oneOverCombinedInputDepth =
       !overCombinedDepth.ok && overCombinedDepth.detail == "depth" && overCombinedDepth.consumed == 0;
+    missingKindMismatch = !missingKind.ok && missingKind.kind == "boundary-mismatch";
+    nonStringKindMismatch = !nonStringKind.ok && nonStringKind.kind == "boundary-mismatch";
+    throwingKindHostFailure = !throwingKind.ok && throwingKind.kind == "host-failure";
+    unknownKindMismatch = !unknownKind.ok && unknownKind.kind == "boundary-mismatch";
+    refusalPrecedesPayload =
+      !refusalBeforePoisonedPayload.ok
+      && refusalBeforePoisonedPayload.kind == "resource-exhaustion"
+      && refusalBeforePoisonedPayload.detail == "nodes"
+      && refusalBeforePoisonedPayload.consumed == 256;
     multipleUniversesShareInputBudget = sharedUniverses.ok && sharedUniverses.nodes == 6;
     normalizationStable = builtins.all (
       level:

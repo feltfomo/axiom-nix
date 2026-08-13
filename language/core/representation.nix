@@ -1,3 +1,4 @@
+{ schema }:
 let
   generation = "axiom-core-syntax-2";
   limits = {
@@ -151,28 +152,5 @@ in
     "suc"
     "max"
   ];
-  termKinds = [
-    "variable"
-    "lambda"
-    "application"
-    "annotation"
-    "universe"
-    "pi"
-    "sigma"
-    "sum-type"
-    "unit-type"
-    "unit"
-    "empty-type"
-    "pair"
-    "first-projection"
-    "second-projection"
-    "left-injection"
-    "right-injection"
-    "sum-elimination"
-    "unit-elimination"
-    "empty-elimination"
-    "identity-type"
-    "refl"
-    "identity-elimination"
-  ];
+  inherit (schema) termKinds;
 }

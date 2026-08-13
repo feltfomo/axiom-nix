@@ -23,9 +23,17 @@ let
   coreSyntax = import ./core-syntax { language = directLanguage; };
   evaluation = import ./evaluation { language = directLanguage; };
   levels = import ./levels { core = import ../language/core; };
-  ruleFamilies = import ./rule-families { core = import ../language/core; };
   kernel = import ./kernel { language = directLanguage; };
   logismos = import ./logismos { inherit lib; };
+  equations = import ./equations {
+    core = import ../language/core;
+    testCases = {
+      "core-syntax" = coreSyntax.cases;
+      levels = levels.cases;
+      logismos = logismos.cases;
+      kernel = kernel.evidence;
+    };
+  };
 
   isolatedLegacyRoot = builtins.path {
     path = ../src;
@@ -101,7 +109,7 @@ let
     coreSyntax = coreSyntax.ok;
     evaluation = evaluation.ok;
     levels = levels.ok;
-    ruleFamilies = ruleFamilies.ok;
+    equations = equations.ok;
     kernel = kernel.ok;
     logismos = logismos.ok;
     newLineIndependent =

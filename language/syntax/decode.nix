@@ -1,8 +1,9 @@
 { result, core }:
 let
-  inherit (core) representation machine operations;
+  inherit (core) representation traversal operations;
   operation = "decode-core-syntax";
-  exact = names: value: builtins.isAttrs value && builtins.attrNames value == names;
+  attrs = import ../internal/attrs.nix;
+  inherit (attrs) exact;
   mismatch =
     expected: observed: path:
     result.mismatch {
@@ -66,7 +67,7 @@ let
       mismatch "non-negative-scope" (builtins.typeOf envelopeControl.value.scope) [ "scope" ]
     else
       let
-        rewritten = machine.rewrite {
+        rewritten = traversal.rewrite {
           root = value.term;
           inherit (value) scope;
         };

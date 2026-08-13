@@ -1,14 +1,18 @@
-{ representation, machine }:
+{ representation, traversal }:
 let
   inherit (representation) generation limits;
-  exact = names: value: builtins.isAttrs value && builtins.attrNames value == names;
+  attrs = import ../internal/attrs.nix;
+  inherit (attrs) exact;
   pathKey = path: "$/${builtins.concatStringsSep "/" path}";
   rejected = kind: detail: {
     ok = false;
     inherit kind detail;
   };
 
-  reverse = builtins.foldl' (values: value: [ value ] ++ values) [ ];
+  lists = import ../internal/lists.nix;
+  inherit (lists) reverse;
+  worklist = import ../internal/worklist.nix { inherit lists; };
+  spine = import ../internal/spine.nix { inherit worklist; };
   resourceExhausted = channel: dimension: limit: consumed: {
     ok = false;
     kind = "resource-exhaustion";
@@ -28,110 +32,24 @@ let
       dimension,
     }:
     let
-      outer = builtins.tryEval (builtins.isList value);
+      folded = spine.fold {
+        inherit value limit;
+        initial = [ ];
+        consume = values: item: [ item ] ++ values;
+      };
     in
-    if !outer.success then
+    if !folded.ok && folded.reason == "resource" then
+      resourceExhausted channel dimension limit folded.consumed
+    else if !folded.ok && folded.reason == "malformed-spine" then
       rejected "host-failure" "${channel}-spine"
-    else if !outer.value then
-      rejected "boundary-mismatch" "${channel}-list"
+    else if !folded.ok then
+      rejected "host-failure" "${channel}-component"
     else
-      let
-        states = builtins.genericClosure {
-          startSet = [
-            {
-              key = 0;
-              status = "running";
-              consumed = 0;
-              remaining = value;
-              values = [ ];
-              failure = null;
-            }
-          ];
-          operator =
-            state:
-            if state.status != "running" then
-              [ ]
-            else
-              let
-                empty = builtins.tryEval (state.remaining == [ ]);
-                nextKey = state.key + 1;
-              in
-              if !empty.success then
-                [
-                  (
-                    state
-                    // {
-                      key = nextKey;
-                      status = "done";
-                      failure = rejected "host-failure" "${channel}-spine";
-                    }
-                  )
-                ]
-              else if empty.value then
-                [
-                  (
-                    state
-                    // {
-                      key = nextKey;
-                      status = "done";
-                    }
-                  )
-                ]
-              else if state.consumed >= limit then
-                [
-                  (
-                    state
-                    // {
-                      key = nextKey;
-                      status = "done";
-                      failure = resourceExhausted channel dimension limit state.consumed;
-                    }
-                  )
-                ]
-              else
-                let
-                  observed = builtins.tryEval (
-                    let
-                      item = builtins.head state.remaining;
-                      remaining = builtins.tail state.remaining;
-                    in
-                    builtins.seq item (builtins.seq remaining { inherit item remaining; })
-                  );
-                in
-                if !observed.success then
-                  [
-                    (
-                      state
-                      // {
-                        key = nextKey;
-                        status = "done";
-                        failure = rejected "host-failure" "${channel}-component";
-                      }
-                    )
-                  ]
-                else
-                  [
-                    (
-                      state
-                      // {
-                        key = nextKey;
-                        consumed = state.consumed + 1;
-                        remaining = observed.value.remaining;
-                        values = [ observed.value.item ] ++ state.values;
-                      }
-                    )
-                  ];
-        };
-        final = builtins.elemAt states (builtins.length states - 1);
-      in
-      if final.failure != null then
-        final.failure
-      else
-        {
-          ok = true;
-          values = reverse final.values;
-          inherit (final) consumed;
-        };
+      {
+        ok = true;
+        values = reverse folded.accumulator;
+        inherit (folded) consumed;
+      };
 
   normalizeMetadataEntry =
     entry:
@@ -283,7 +201,7 @@ let
       rejected "boundary-mismatch" "scope"
     else
       let
-        checked = machine.validate {
+        checked = traversal.validate {
           inherit (envelope) root scope;
         };
       in
@@ -312,6 +230,22 @@ let
       rewritten
     else
       admitted (representation.envelope scope rewritten.value metadata);
+
+  rewriteOperation =
+    {
+      source,
+      targetScope,
+      variableAction,
+      metadataTransform,
+    }:
+    let
+      rewritten = traversal.rewrite {
+        inherit (source) root;
+        inherit (source) scope;
+        onVariable = variableAction;
+      };
+    in
+    if !rewritten.ok then rewritten else finish targetScope (metadataTransform rewritten) rewritten;
 
   prepareMap =
     sourceScope: targetScope: injective: mapping:
@@ -395,15 +329,12 @@ let
     else if !prepared.ok then
       prepared
     else
-      finish targetScope source.value.metadata (
-        machine.rewrite {
-          root = source.value.root;
-          inherit (envelope) scope;
-          onVariable =
-            { node, ... }:
-            mapFree envelope.scope targetScope prepared.table node;
-        }
-      );
+      rewriteOperation {
+        source = source.value;
+        inherit targetScope;
+        variableAction = { node, ... }: mapFree envelope.scope targetScope prepared.table node;
+        metadataTransform = _result: source.value.metadata;
+      };
 
   prefixMetadata = prefix: metadata: map (entry: entry // { path = prefix ++ entry.path; }) metadata;
   unprefixBody =
@@ -491,27 +422,25 @@ let
     else if !prepared.ok || prepared.index != envelope.scope then
       rejected "boundary-mismatch" "substitution"
     else
-      let
-        rewritten = machine.rewrite {
-          root = source.value.root;
-          inherit (envelope) scope;
-          onVariable =
-            { node, ... }:
-            if node.level < envelope.scope then
-              prepared.table.${toString node.level}.root
-            else
-              representation.variable (node.level + targetScope - envelope.scope);
-        };
-        occurrences = builtins.filter (occurrence: occurrence.level < envelope.scope) rewritten.variables;
-        metadata = spliceMetadata source.value.metadata occurrences prepared.table;
-      in
-      finish targetScope metadata rewritten;
+      rewriteOperation {
+        source = source.value;
+        inherit targetScope;
+        variableAction =
+          { node, ... }:
+          if node.level < envelope.scope then
+            prepared.table.${toString node.level}.root
+          else
+            representation.variable (node.level + targetScope - envelope.scope);
+        metadataTransform =
+          rewritten:
+          let
+            occurrences = builtins.filter (occurrence: occurrence.level < envelope.scope) rewritten.variables;
+          in
+          spliceMetadata source.value.metadata occurrences prepared.table;
+      };
 
   open =
-    {
-      envelope,
-      replacement,
-    }:
+    { envelope, replacement }:
     let
       source = admitted envelope;
       replacementResult = admitted replacement;
@@ -525,28 +454,36 @@ let
       rejected "boundary-mismatch" "opening-lambda"
     else
       let
-        rewritten = machine.rewrite {
+        subject = {
           root = source.value.root.body;
           scope = scope + 1;
-          onVariable =
-            { node, ... }:
-            if node.level == scope then
-              replacementResult.value.root
-            else if node.level > scope then
-              representation.variable (node.level - 1)
-            else
-              representation.variable node.level;
+          metadata = unprefixBody source.value.metadata;
         };
-        occurrences = builtins.filter (occurrence: occurrence.level == scope) rewritten.variables;
         replacementMap = {
           ${toString scope} = {
             root = replacementResult.value.root;
             metadata = replacementResult.value.metadata;
           };
         };
-        metadata = spliceMetadata (unprefixBody source.value.metadata) occurrences replacementMap;
       in
-      finish scope metadata rewritten;
+      rewriteOperation {
+        source = subject;
+        targetScope = scope;
+        variableAction =
+          { node, ... }:
+          if node.level == scope then
+            replacementResult.value.root
+          else if node.level > scope then
+            representation.variable (node.level - 1)
+          else
+            representation.variable node.level;
+        metadataTransform =
+          rewritten:
+          let
+            occurrences = builtins.filter (occurrence: occurrence.level == scope) rewritten.variables;
+          in
+          spliceMetadata subject.metadata occurrences replacementMap;
+      };
 
   close =
     {
@@ -561,96 +498,105 @@ let
     let
       source = admitted envelope;
       inherit (envelope) scope;
+      binder = canonicalizeMetadata {
+        metadata = [ binderMetadata ];
+        validPaths = [ [ ] ];
+      };
+      rewritten =
+        if !source.ok || !(builtins.isInt sourceLevel && sourceLevel >= 0 && sourceLevel < scope) then
+          rejected "boundary-mismatch" "closing-level"
+        else
+          rewriteOperation {
+            source = source.value;
+            targetScope = scope + 1;
+            variableAction =
+              { node, ... }:
+              representation.variable (
+                if node.level == sourceLevel then
+                  scope
+                else if node.level >= scope then
+                  node.level + 1
+                else
+                  node.level
+              );
+            metadataTransform = _result: source.value.metadata;
+          };
     in
     if !source.ok then
       source
     else if !(builtins.isInt sourceLevel && sourceLevel >= 0 && sourceLevel < scope) then
       rejected "boundary-mismatch" "closing-level"
+    else if !binder.ok then
+      binder
+    else if !rewritten.ok then
+      rewritten
     else
-      let
-        binder = canonicalizeMetadata {
-          metadata = [ binderMetadata ];
-          validPaths = [ [ ] ];
-        };
-        rewritten = machine.rewrite {
-          root = source.value.root;
-          inherit scope;
-          onVariable =
-            { node, ... }:
-            representation.variable (
-              if node.level == sourceLevel then
-                scope
-              else if node.level >= scope then
-                node.level + 1
-              else
-                node.level
-            );
-        };
-      in
-      if !binder.ok then
-        binder
-      else if !rewritten.ok then
-        rewritten
-      else
-        admitted (
-          representation.envelope scope (representation.lambda rewritten.value) (
-            binder.metadata ++ prefixMetadata [ "body" ] source.value.metadata
-          )
-        );
+      admitted (
+        representation.envelope scope (representation.lambda rewritten.value.root) (
+          binder.metadata ++ prefixMetadata [ "body" ] rewritten.value.metadata
+        )
+      );
   # binder bodies use one ordered consecutive segment above the unchanged outer scope
   closeBinderBody =
     { envelope, sourceLevels }:
     let
       source = admitted envelope;
-      count = if builtins.isList sourceLevels then builtins.length sourceLevels else -1;
-      unique =
-        builtins.length (
-          builtins.attrNames (
-            builtins.listToAttrs (
-              map (level: {
-                name = toString level;
-                value = true;
-              }) sourceLevels
-            )
+      observedOuter = builtins.tryEval (builtins.isList sourceLevels);
+      outerValid = observedOuter.success && observedOuter.value;
+      observedMembers =
+        if outerValid then
+          builtins.tryEval (
+            builtins.all (level: builtins.isInt level && level >= 0 && level < envelope.scope) sourceLevels
           )
-        ) == count;
-      valid =
-        source.ok
-        && count >= 0
-        && unique
-        && builtins.all (level: builtins.isInt level && level >= 0 && level < envelope.scope) sourceLevels;
-      positions = builtins.listToAttrs (
-        builtins.genList (index: {
-          name = toString (builtins.elemAt sourceLevels index);
-          value = index;
-        }) count
-      );
-      rewritten =
-        if !valid then
-          rejected "boundary-mismatch" "binder-close"
         else
-          machine.rewrite {
-            root = source.value.root;
-            inherit (envelope) scope;
-            onVariable =
-              { node, ... }:
-              let
-                key = toString node.level;
-              in
-              if node.level < envelope.scope && builtins.hasAttr key positions then
-                representation.variable (envelope.scope + positions.${key})
-              else if node.level >= envelope.scope then
-                representation.variable (node.level + count)
-              else
-                representation.variable node.level;
+          {
+            success = true;
+            value = false;
           };
     in
-    if !valid then
+    if !source.ok || !outerValid || !observedMembers.success || !observedMembers.value then
       rejected "boundary-mismatch" "binder-close"
-    else if !rewritten.ok then
-      rewritten
     else
-      admitted (representation.envelope (envelope.scope + count) rewritten.value source.value.metadata);
+      let
+        count = builtins.length sourceLevels;
+        keys = map toString sourceLevels;
+        unique =
+          builtins.length (
+            builtins.attrNames (
+              builtins.listToAttrs (
+                map (name: {
+                  inherit name;
+                  value = true;
+                }) keys
+              )
+            )
+          ) == count;
+        positions = builtins.listToAttrs (
+          builtins.genList (index: {
+            name = builtins.elemAt keys index;
+            value = index;
+          }) count
+        );
+      in
+      if !unique then
+        rejected "boundary-mismatch" "binder-close"
+      else
+        rewriteOperation {
+          source = source.value;
+          targetScope = envelope.scope + count;
+          variableAction =
+            { node, ... }:
+            let
+              key = toString node.level;
+            in
+            if node.level < envelope.scope && builtins.hasAttr key positions then
+              representation.variable (envelope.scope + positions.${key})
+            else if node.level >= envelope.scope then
+              representation.variable (node.level + count)
+            else
+              representation.variable node.level;
+          metadataTransform = _result: source.value.metadata;
+        };
 
   openBinderBody =
     {
@@ -673,27 +619,23 @@ let
         && envelope.scope == outerScope + count
         && prepared.ok
         && prepared.index == count;
-      rewritten =
-        if !valid then
-          rejected "boundary-mismatch" "binder-open"
-        else
-          machine.rewrite {
-            root = source.value.root;
-            inherit (envelope) scope;
-            onVariable =
-              { node, ... }:
-              if node.level < outerScope then
-                representation.variable node.level
-              else if node.level < outerScope + count then
-                prepared.table.${toString (node.level - outerScope)}.root
-              else
-                representation.variable (node.level - count);
-          };
     in
     if !valid then
       rejected "boundary-mismatch" "binder-open"
     else
-      finish outerScope source.value.metadata rewritten;
+      rewriteOperation {
+        source = source.value;
+        targetScope = outerScope;
+        variableAction =
+          { node, ... }:
+          if node.level < outerScope then
+            representation.variable node.level
+          else if node.level < outerScope + count then
+            prepared.table.${toString (node.level - outerScope)}.root
+          else
+            representation.variable (node.level - count);
+        metadataTransform = _result: source.value.metadata;
+      };
 
 in
 {
@@ -717,9 +659,6 @@ in
     a.ok
     && b.ok
     && a.value.scope == b.value.scope
-    && machine.equal {
-      left = a.value.root;
-      right = b.value.root;
-      scope = a.value.scope;
-    };
+    # admitted roots are closed first-order core values and metadata is outside this comparison
+    && a.value.root == b.value.root;
 }

@@ -357,6 +357,29 @@ let
     envelope = selectedClosed.value;
     replacement = admitted 2 (variable 1) [ ];
   };
+  duplicateBinderLevels = operations.closeBinderBody {
+    envelope = selectedSource;
+    sourceLevels = [
+      1
+      1
+    ];
+  };
+  nonIntegerBinderLevels = operations.closeBinderBody {
+    envelope = selectedSource;
+    sourceLevels = [ "1" ];
+  };
+  throwingBinderLevels = operations.closeBinderBody {
+    envelope = selectedSource;
+    sourceLevels = [ poison ];
+  };
+  invalidOuterBinderLevels = operations.closeBinderBody {
+    envelope = selectedSource;
+    sourceLevels = "levels";
+  };
+  throwingOuterBinderLevels = operations.closeBinderBody {
+    envelope = selectedSource;
+    sourceLevels = poison;
+  };
 
   metadataTerm = annotation (application (variable 0) (lambda (variable 1))) (variable 0);
   unorderedMetadata = [
@@ -367,7 +390,7 @@ let
   canonicalMetadata = decode (envelope 1 metadataTerm unorderedMetadata);
 
   exactMetadataPaths =
-    (core.machine.validate {
+    (core.traversal.validate {
       root = exactNodeTerm;
       scope = 0;
     }).paths;
@@ -481,6 +504,10 @@ let
     (decode (envelope 0 (lambda (_value: null)) [ ]))
   ];
   rootPoison = decode (envelope 0 poison [ ]);
+  missingKindRoot = decode (envelope 0 { } [ ]);
+  nonStringKindRoot = decode (envelope 0 { kind = 1; } [ ]);
+  throwingKindRoot = decode (envelope 0 { kind = poison; } [ ]);
+  unknownKindRoot = decode (envelope 0 { kind = "future"; } [ ]);
   nestedPoisons = [
     (decode (envelope 0 (lambda poison) [ ]))
     (decode (envelope 1 (application (variable 0) poison) [ ]))
@@ -568,7 +595,7 @@ let
   matrixEnvelope =
     term:
     let
-      validated = core.machine.validate {
+      validated = core.traversal.validate {
         root = term;
         scope = 3;
       };
@@ -672,6 +699,7 @@ let
   matrixKinds = map (term: term.kind) matrixTerms;
 
   cases = {
+    schemaInventoryAgreement = core.schema.termKinds == representation.termKinds;
     completeConstructorOperationMatrix =
       matrixKinds == representation.termKinds && builtins.all matrixCheck matrixTerms;
     generatedStructuralLaws = generatedLawPass;
@@ -753,6 +781,10 @@ let
     nonAttrRootsMismatch = builtins.all (value: value.kind == "boundary-mismatch") rootOuterCases;
     nonAttrChildrenMismatch = builtins.all (value: value.kind == "boundary-mismatch") nestedOuterCases;
     poisonRootHostFailure = rootPoison.kind == "host-failure";
+    missingKindMismatch = missingKindRoot.kind == "boundary-mismatch";
+    nonStringKindMismatch = nonStringKindRoot.kind == "boundary-mismatch";
+    throwingKindHostFailure = throwingKindRoot.kind == "host-failure";
+    unknownKindMismatch = unknownKindRoot.kind == "boundary-mismatch";
     poisonChildrenHostFailure = builtins.all (value: value.kind == "host-failure") nestedPoisons;
     malformedRejected = builtins.all (value: value.kind != "success") malformedCases;
     preparedMapStress = stressMapped.ok && structurally 128 stressMapped.value.root stressExpectedTerm;
@@ -761,6 +793,20 @@ let
       overNodes.kind == "resource-exhaustion"
       && overNodes.dimension == "nodes"
       && overNodes.consumed == 256;
+    refusalPrecedesPoisonedPayload =
+      overNodes.kind == "resource-exhaustion"
+      && overNodes.dimension == "nodes"
+      && overNodes.consumed == 256;
+    duplicateBinderLevelsMismatch =
+      !duplicateBinderLevels.ok && duplicateBinderLevels.kind == "boundary-mismatch";
+    nonIntegerBinderLevelsMismatch =
+      !nonIntegerBinderLevels.ok && nonIntegerBinderLevels.kind == "boundary-mismatch";
+    throwingBinderLevelsMismatch =
+      !throwingBinderLevels.ok && throwingBinderLevels.kind == "boundary-mismatch";
+    invalidOuterBinderLevelsMismatch =
+      !invalidOuterBinderLevels.ok && invalidOuterBinderLevels.kind == "boundary-mismatch";
+    throwingOuterBinderLevelsMismatch =
+      !throwingOuterBinderLevels.ok && throwingOuterBinderLevels.kind == "boundary-mismatch";
     exactDepthBoundary = exactDepth.kind == "success";
     depthPoisonRefused =
       overDepth.kind == "resource-exhaustion" && overDepth.dimension == "depth" && overDepth.limit == 64;

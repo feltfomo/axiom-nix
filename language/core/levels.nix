@@ -1,23 +1,17 @@
-{ limits }:
+{ representation }:
 let
+  inherit (representation) limits;
+  lists = import ../internal/lists.nix;
+  worklist = import ../internal/worklist.nix { inherit lists; };
+  attrs = import ../internal/attrs.nix;
+  inherit (attrs) exact;
   failure = kind: detail: consumed: {
     ok = false;
     inherit kind detail consumed;
   };
-  zero = {
-    kind = "zero";
-  };
-  suc = level: {
-    kind = "suc";
-    inherit level;
-  };
-  max = left: right: {
-    kind = "max";
-    inherit left right;
-  };
-  exact = names: value: builtins.isAttrs value && builtins.attrNames value == names;
-
-  # concrete levels normalize to one successor chain rather than exposing the counter used to build it
+  zero = representation.levelZero;
+  suc = representation.levelSuc;
+  max = representation.levelMax;
   normalizeInput =
     {
       value,
@@ -25,7 +19,7 @@ let
       depth ? 0,
     }:
     let
-      states = builtins.genericClosure {
+      final = worklist.runLinear {
         startSet = [
           {
             key = 0;
@@ -73,42 +67,52 @@ let
                 jobs = rest;
                 values = [ (if left > right then left else right) ] ++ builtins.tail (builtins.tail state.values);
               }
-            # raw level nodes continue the containing term's input account
             else if job.depth > limits.depth then
               stop (failure "resource-exhaustion" "depth" state.consumed)
             else if state.consumed >= limits.nodes then
+              # raw level nodes continue the enclosing term input account
               stop (failure "resource-exhaustion" "nodes" state.consumed)
             else
               let
-                consumed = state.consumed + 1;
+                charged = state.consumed + 1;
                 outer = builtins.tryEval (builtins.typeOf job.node);
               in
               if !outer.success then
-                stop (failure "host-failure" "level-outer" consumed)
+                stop (failure "host-failure" "level-outer" charged)
               else if outer.value != "set" then
-                stop (failure "boundary-mismatch" "level" consumed)
+                stop (failure "boundary-mismatch" "level" charged)
               else
                 let
-                  inspected = builtins.tryEval {
-                    names = builtins.attrNames job.node;
-                    kind = job.node.kind;
-                  };
+                  names = builtins.attrNames job.node;
+                  hasKind = builtins.elem "kind" names && job.node ? kind;
+                  observedKind =
+                    if hasKind then
+                      builtins.tryEval (builtins.seq job.node.kind job.node.kind)
+                    else
+                      {
+                        success = true;
+                        value = null;
+                      };
                 in
-                if !inspected.success then
-                  stop (failure "host-failure" "level-control" consumed)
-                else if inspected.value.kind == "zero" then
+                if !hasKind then
+                  stop (failure "boundary-mismatch" "level-kind" charged)
+                else if !observedKind.success then
+                  stop (failure "host-failure" "level-control" charged)
+                else if !builtins.isString observedKind.value then
+                  stop (failure "boundary-mismatch" "level-kind" charged)
+                else if observedKind.value == "zero" then
                   if exact [ "kind" ] job.node then
                     next {
-                      inherit consumed;
+                      consumed = charged;
                       jobs = rest;
                       values = [ 0 ] ++ state.values;
                     }
                   else
-                    stop (failure "boundary-mismatch" "level-zero" consumed)
-                else if inspected.value.kind == "suc" then
+                    stop (failure "boundary-mismatch" "level-zero" charged)
+                else if observedKind.value == "suc" then
                   if exact [ "kind" "level" ] job.node then
                     next {
-                      inherit consumed;
+                      consumed = charged;
                       jobs = [
                         {
                           action = "visit";
@@ -120,11 +124,11 @@ let
                       ++ rest;
                     }
                   else
-                    stop (failure "boundary-mismatch" "level-suc" consumed)
-                else if inspected.value.kind == "max" then
+                    stop (failure "boundary-mismatch" "level-suc" charged)
+                else if observedKind.value == "max" then
                   if exact [ "kind" "left" "right" ] job.node then
                     next {
-                      inherit consumed;
+                      consumed = charged;
                       jobs = [
                         {
                           action = "visit";
@@ -141,13 +145,13 @@ let
                       ++ rest;
                     }
                   else
-                    stop (failure "boundary-mismatch" "level-max" consumed)
+                    stop (failure "boundary-mismatch" "level-max" charged)
                 else
-                  stop (failure "boundary-mismatch" "level-constructor" consumed);
+                  stop (failure "boundary-mismatch" "level-constructor" charged);
       };
-      final = builtins.elemAt states (builtins.length states - 1);
-      height = if final.result == null && final.values != [ ] then builtins.head final.values else null;
-      rebuilt = if height == null then null else rebuildCanonical height;
+      heightValue =
+        if final.result == null && final.values != [ ] then builtins.head final.values else null;
+      rebuilt = if heightValue == null then null else rebuildCanonical heightValue;
     in
     if final.result != null then
       final.result
@@ -156,32 +160,36 @@ let
     else
       rebuilt
       // {
-        inherit height;
+        height = heightValue;
         inherit (final) consumed;
       };
-
   normalize = value: normalizeInput { inherit value; };
-
-  # output construction is charged independently after the input tree has consumed its traversal budget
+  # canonical output has an account independent from input observation
   rebuildCanonical =
-    height:
+    heightValue:
     let
-      outputNodes = if builtins.isInt height && height >= 0 then height + 1 else limits.nodes + 1;
+      outputNodes =
+        if builtins.isInt heightValue && heightValue >= 0 then heightValue + 1 else limits.nodes + 1;
       build = count: if count == 0 then zero else suc (build (count - 1));
     in
-    if !builtins.isInt height || height < 0 then
+    if !builtins.isInt heightValue || heightValue < 0 then
       failure "boundary-mismatch" "level-output-height" 0
     else if outputNodes > limits.nodes then
       failure "resource-exhaustion" "level-output-nodes" limits.nodes
-    else if height > limits.depth then
+    else if heightValue > limits.depth then
       failure "resource-exhaustion" "level-output-depth" limits.depth
     else
       {
         ok = true;
-        value = build height;
+        value = build heightValue;
         outputConsumed = outputNodes;
       };
-
+  height =
+    level:
+    let
+      normalized = normalize level;
+    in
+    if !normalized.ok then normalized else normalized // { value = normalized.height; };
   equal =
     left: right:
     let
@@ -189,7 +197,6 @@ let
       b = normalize right;
     in
     a.ok && b.ok && a.height == b.height;
-
   successor =
     level:
     let
@@ -209,6 +216,26 @@ let
     else
       normalize (max a.value b.value);
   requireExact = expected: actual: equal expected actual;
+  joinSemilattice = {
+    inherit
+      zero
+      successor
+      height
+      equal
+      requireExact
+      ;
+    join = maximum;
+    canonicalize = normalize;
+  };
+  formation = {
+    universe = successor;
+    pi = maximum;
+    sigma = maximum;
+    sum = maximum;
+    unit = zero;
+    empty = zero;
+    identity = normalize;
+  };
 in
 {
   inherit
@@ -222,14 +249,7 @@ in
     successor
     maximum
     requireExact
+    joinSemilattice
+    formation
     ;
-  formation = {
-    universe = successor;
-    pi = maximum;
-    sigma = maximum;
-    sum = maximum;
-    unit = zero;
-    empty = zero;
-    identity = normalize;
-  };
 }
