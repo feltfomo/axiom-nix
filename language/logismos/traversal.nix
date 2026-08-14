@@ -147,9 +147,28 @@ in
     if builtins.length left != builtins.length right then
       computation.fail mismatch
     else
-      computation.traverse (index: combine (builtins.elemAt left index) (builtins.elemAt right index)) (
-        builtins.genList (index: index) (builtins.length left)
-      );
+      let
+        builder = builtins.foldl' (
+          previous: leftValue: continuation:
+          previous (
+            difference: rightValue:
+            continuation (
+              tail:
+              difference (
+                [
+                  {
+                    inherit leftValue rightValue;
+                  }
+                ]
+                ++ tail
+              )
+            )
+          )
+        ) (continuation: continuation (tail: tail)) left;
+        consumer = builder (difference: difference [ ]);
+        pairs = builtins.foldl' (current: current) consumer right;
+      in
+      computation.traverse (pair: combine pair.leftValue pair.rightValue) pairs;
   rewrite =
     {
       kinds,

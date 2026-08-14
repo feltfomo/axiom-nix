@@ -1,5 +1,6 @@
 { evaluation }:
 let
+  attrs = import ../internal/attrs.nix;
   generation = "axiom-kernel-1";
   evaluationGeneration = evaluation.representation.generation;
   limits = {
@@ -14,7 +15,7 @@ let
   exact =
     names: value:
     let
-      checked = builtins.tryEval (builtins.isAttrs value && builtins.attrNames value == names);
+      checked = builtins.tryEval (attrs.exact names value);
     in
     checked.success && checked.value;
   generationMatches =
@@ -61,84 +62,7 @@ let
     value:
     let
       header = semanticHeader value;
-      shapes = {
-        neutral = [
-          "generation"
-          "head"
-          "kind"
-          "spine"
-          "spineCount"
-        ];
-        closure = [
-          "body"
-          "environment"
-          "generation"
-          "kind"
-        ];
-        universe = [
-          "generation"
-          "kind"
-          "level"
-        ];
-        pi = [
-          "codomain"
-          "domain"
-          "generation"
-          "kind"
-        ];
-        sigma = [
-          "codomain"
-          "domain"
-          "generation"
-          "kind"
-        ];
-        "sum-type" = [
-          "generation"
-          "kind"
-          "left"
-          "right"
-        ];
-        "unit-type" = [
-          "generation"
-          "kind"
-        ];
-        "empty-type" = [
-          "generation"
-          "kind"
-        ];
-        unit = [
-          "generation"
-          "kind"
-        ];
-        pair = [
-          "first"
-          "generation"
-          "kind"
-          "second"
-        ];
-        "left-injection" = [
-          "generation"
-          "kind"
-          "value"
-        ];
-        "right-injection" = [
-          "generation"
-          "kind"
-          "value"
-        ];
-        "identity-type" = [
-          "carrier"
-          "generation"
-          "kind"
-          "left"
-          "right"
-        ];
-        refl = [
-          "generation"
-          "kind"
-          "value"
-        ];
-      };
+      shapes = evaluation.representation.schema.valueFields;
     in
     if !header.ok then
       header
@@ -159,7 +83,7 @@ let
     in
     if !header.ok then
       header
-    else if header.kind == "value" && exact [ "generation" "kind" "value" ] value then
+    else if header.kind == "value" && exact evaluation.representation.schema.cellFields.value value then
       let
         child = semanticShape value.value;
       in
@@ -170,7 +94,7 @@ let
         }
       else
         child
-    else if header.kind == "thunk" && exact [ "environment" "generation" "kind" "term" ] value then
+    else if header.kind == "thunk" && exact evaluation.representation.schema.cellFields.thunk value then
       let
         environment = environmentShape value.environment;
       in
@@ -206,7 +130,7 @@ let
         reason = "stale";
       }
     else if
-      !exact [ "cells" "generation" "nextLevel" ] value
+      !exact evaluation.representation.schema.environmentFields value
       || !builtins.isInt value.nextLevel
       || value.nextLevel < 0
       || !builtins.isAttrs value.cells
@@ -224,7 +148,7 @@ let
       observed = builtins.tryEval (
         shaped.ok
         && shaped.kind == "neutral"
-        && exact [ "kind" "level" ] value.head
+        && exact evaluation.representation.schema.headFields value.head
         && value.head.kind == "level"
         && builtins.isInt value.head.level
         && builtins.isList value.spine
@@ -259,45 +183,7 @@ let
     value:
     let
       header = semanticHeader value;
-      shapes = {
-        application = [
-          "argument"
-          "generation"
-          "kind"
-        ];
-        "first-projection" = [
-          "generation"
-          "kind"
-        ];
-        "second-projection" = [
-          "generation"
-          "kind"
-        ];
-        "sum-elimination" = [
-          "generation"
-          "kind"
-          "leftBranch"
-          "motive"
-          "rightBranch"
-        ];
-        "unit-elimination" = [
-          "case"
-          "generation"
-          "kind"
-          "motive"
-        ];
-        "empty-elimination" = [
-          "generation"
-          "kind"
-          "motive"
-        ];
-        "identity-elimination" = [
-          "generation"
-          "kind"
-          "motive"
-          "reflBranch"
-        ];
-      };
+      shapes = evaluation.representation.schema.spineItemFields;
       payload =
         if !header.ok || !(builtins.hasAttr header.kind shapes) || !exact shapes.${header.kind} value then
           {
@@ -342,125 +228,6 @@ let
         ok = true;
         inherit (header) kind;
       };
-  boundedNewestFirst =
-    {
-      value,
-      count,
-      limit,
-    }:
-    let
-      outer = builtins.tryEval (builtins.isList value && builtins.isInt count && count >= 0);
-      states =
-        if !outer.success || !outer.value then
-          [ ]
-        else
-          builtins.genericClosure {
-            startSet = [
-              {
-                key = 0;
-                status = "running";
-                remaining = value;
-                consumed = 0;
-                oldest = [ ];
-                failure = null;
-              }
-            ];
-            operator =
-              state:
-              if state.status != "running" then
-                [ ]
-              else
-                let
-                  empty = builtins.tryEval (state.remaining == [ ]);
-                  nextKey = state.key + 1;
-                in
-                if !empty.success then
-                  [
-                    (
-                      state
-                      // {
-                        key = nextKey;
-                        status = "done";
-                        failure = "malformed";
-                      }
-                    )
-                  ]
-                else if empty.value then
-                  [
-                    (
-                      state
-                      // {
-                        key = nextKey;
-                        status = "done";
-                        failure = if state.consumed == count then null else "count";
-                      }
-                    )
-                  ]
-                else if state.consumed >= limit then
-                  [
-                    (
-                      state
-                      // {
-                        key = nextKey;
-                        status = "done";
-                        failure = "resource";
-                      }
-                    )
-                  ]
-                else
-                  let
-                    observed = builtins.tryEval (
-                      let
-                        item = builtins.head state.remaining;
-                        tail = builtins.tail state.remaining;
-                      in
-                      builtins.seq item (builtins.seq tail { inherit item tail; })
-                    );
-                  in
-                  if !observed.success then
-                    [
-                      (
-                        state
-                        // {
-                          key = nextKey;
-                          status = "done";
-                          failure = "malformed";
-                        }
-                      )
-                    ]
-                  else
-                    [
-                      (
-                        state
-                        // {
-                          key = nextKey;
-                          consumed = state.consumed + 1;
-                          remaining = observed.value.tail;
-                          oldest = [ observed.value.item ] ++ state.oldest;
-                        }
-                      )
-                    ];
-          };
-      final = if states == [ ] then null else builtins.elemAt states (builtins.length states - 1);
-    in
-    if !outer.success || !outer.value then
-      {
-        ok = false;
-        reason = "malformed";
-        consumed = 0;
-      }
-    else if final.failure != null then
-      {
-        ok = false;
-        reason = final.failure;
-        inherit (final) consumed;
-      }
-    else
-      {
-        ok = true;
-        values = final.oldest;
-        inherit (final) consumed;
-      };
   semanticTreeShape =
     depth: value:
     let
@@ -492,17 +259,14 @@ let
         else if shaped.kind == "neutral" then
           let
             neutral = neutralShape value;
-            spine =
-              if neutral.ok then
-                boundedNewestFirst {
-                  value = value.spine;
-                  count = value.spineCount;
-                  limit = limits.readback;
-                }
-              else
-                { ok = false; };
+            spine = builtins.tryEval (
+              neutral.ok
+              && builtins.length value.spine == value.spineCount
+              && value.spineCount <= limits.readback
+              && builtins.all (item: (spineItemShape item).ok) value.spine
+            );
           in
-          neutral.ok && spine.ok && builtins.all (item: (spineItemShape item).ok) spine.values
+          spine.success && spine.value
         else
           true;
     in
@@ -597,7 +361,6 @@ in
     neutralShape
     closureShape
     spineItemShape
-    boundedNewestFirst
     semanticTreeShape
     contextEntryShape
     contextShape

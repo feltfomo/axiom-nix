@@ -26,6 +26,9 @@ let
     elimination = "language/kernel/checking.nix";
     computation = "language/evaluation";
     equality = "language/kernel/conversion.nix";
+    transition = "language/kernel/neutral-elimination.nix";
+    reflection = "language/kernel/readback.nix";
+    reification = "language/kernel/readback.nix";
     readback = "language/kernel/readback.nix";
   };
   family =

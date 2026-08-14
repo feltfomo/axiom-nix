@@ -1,9 +1,40 @@
 { core }:
 let
+  logismos = import ../logismos;
   evaluation = import ../evaluation { inherit core; };
   representation = import ./representation.nix { inherit evaluation; };
   result = import ./result.nix { inherit representation core; };
-  context = import ./context.nix { inherit evaluation representation result; };
+  budget = import ./resources.nix { inherit logismos representation result; };
+  context = import ./context.nix {
+    inherit
+      evaluation
+      representation
+      result
+      budget
+      logismos
+      ;
+  };
+  semantic = import ./semantic-ops.nix {
+    inherit
+      core
+      evaluation
+      representation
+      result
+      budget
+      logismos
+      ;
+  };
+  neutralTransition = import ./neutral-elimination.nix {
+    inherit
+      evaluation
+      representation
+      result
+      context
+      semantic
+      budget
+      logismos
+      ;
+  };
   readback = import ./readback.nix {
     inherit
       core
@@ -11,6 +42,10 @@ let
       representation
       result
       context
+      budget
+      semantic
+      neutralTransition
+      logismos
       ;
   };
   conversion = import ./conversion.nix {
@@ -21,6 +56,10 @@ let
       result
       context
       readback
+      semantic
+      budget
+      neutralTransition
+      logismos
       ;
   };
   checking = import ./checking.nix {
@@ -32,6 +71,9 @@ let
       context
       readback
       conversion
+      semantic
+      budget
+      logismos
       ;
   };
 in

@@ -481,11 +481,476 @@ let
     type = sem.universe core.levels.zero;
     inherit (unitElimination) value;
   };
+  longSpineLength = 64;
+  longPiSyntax = builtins.foldl' (body: _index: r.pi r.unitType body) r.unitType (
+    builtins.genList (index: index) longSpineLength
+  );
+  longSpineContextResult = kernel.checkContext {
+    entries = [ (r.envelope 0 longPiSyntax [ ]) ];
+    limits = {
+      checking = 4096;
+      conversion = 4096;
+      comparison = 4096;
+      readback = 4096;
+      context = 256;
+      output = 256;
+      depth = 64;
+    };
+  };
+  longSpineContext = longSpineContextResult.context;
+  longApplicationSyntax = builtins.foldl' (
+    function: _index: r.application function r.unit
+  ) (r.variable 0) (builtins.genList (index: index) longSpineLength);
+  longSpineInference = kernel.infer {
+    contextValue = longSpineContext;
+    envelope = r.envelope 1 longApplicationSyntax [ ];
+    limits = {
+      checking = 4096;
+      conversion = 4096;
+      comparison = 4096;
+      readback = 4096;
+      context = 256;
+      output = 256;
+      depth = 64;
+    };
+  };
+  longSpineReadback = kernel.quote {
+    contextValue = longSpineContext;
+    type = sem.unitType;
+    inherit (longSpineInference) value;
+    limits = {
+      checking = 4096;
+      conversion = 4096;
+      comparison = 4096;
+      readback = 4096;
+      context = 256;
+      output = 256;
+      depth = 64;
+    };
+  };
   sumEtaControl = sumEta.ok && !sumEtaOptimized.ok && !sumEtaOracle.ok;
   emptyEtaControl = emptyEta.ok && !emptyEtaOptimized.ok && !emptyEtaOracle.ok;
   identityEtaControl = identityEta.ok && !identityEtaOptimized.ok && !identityEtaOracle.ok;
+  poisonedSpineItem = {
+    kind = builtins.throw "poisoned spine kind forced";
+  };
+  malformedSpineItem = {
+    kind = "not-an-eliminator";
+  };
+  poisonedNeutral = (sem.neutral 0) // {
+    spine = [ poisonedSpineItem ];
+    spineCount = 1;
+  };
+  malformedNeutral = (sem.neutral 0) // {
+    spine = [ malformedSpineItem ];
+    spineCount = 1;
+  };
+  poisonedReadbackAttempt = builtins.tryEval (
+    kernel.quote {
+      contextValue = emptyVariableContext;
+      type = sem.emptyType;
+      value = poisonedNeutral;
+    }
+  );
+  malformedReadbackAttempt = builtins.tryEval (
+    kernel.quote {
+      contextValue = emptyVariableContext;
+      type = sem.emptyType;
+      value = malformedNeutral;
+    }
+  );
+  poisonedConversionAttempt = builtins.tryEval (
+    kernel.convertTerms {
+      contextValue = emptyVariableContext;
+      type = sem.emptyType;
+      left = poisonedNeutral;
+      right = poisonedNeutral;
+    }
+  );
+  malformedConversionAttempt = builtins.tryEval (
+    kernel.convertTerms {
+      contextValue = emptyVariableContext;
+      type = sem.emptyType;
+      left = malformedNeutral;
+      right = malformedNeutral;
+    }
+  );
+  hostileSpineRejected =
+    builtins.all
+      (
+        attempted:
+        attempted.success
+        && !attempted.value.ok
+        && attempted.value.kind == "internal-failure"
+        && attempted.value.code == "AXIOM-KERNEL-004"
+      )
+      [
+        poisonedReadbackAttempt
+        malformedReadbackAttempt
+        poisonedConversionAttempt
+        malformedConversionAttempt
+      ];
+  malformedLimitCases = [
+    (kernel.infer {
+      contextValue = emptyContext;
+      envelope = r.envelope 0 r.unitType [ ];
+      limits = {
+        unknown = 1;
+      };
+    })
+    (kernel.infer {
+      contextValue = emptyContext;
+      envelope = r.envelope 0 r.unitType [ ];
+      limits = {
+        checking = -1;
+      };
+    })
+    (kernel.infer {
+      contextValue = emptyContext;
+      envelope = r.envelope 0 r.unitType [ ];
+      limits = {
+        checking = 1.5;
+      };
+    })
+    (kernel.infer {
+      contextValue = emptyContext;
+      envelope = r.envelope 0 r.unitType [ ];
+      limits = [ ];
+    })
+    (kernel.infer {
+      contextValue = emptyContext;
+      envelope = r.envelope 0 r.unitType [ ];
+      limits = builtins.throw "limits poison";
+    })
+  ];
+  malformedLimitsRejected = builtins.all (
+    value: !value.ok && value.kind == "internal-failure" && value.code == "AXIOM-KERNEL-011"
+  ) malformedLimitCases;
+  contains = needle: text: builtins.replaceStrings [ needle ] [ "" ] text != text;
+  structuralSources = map builtins.readFile [
+    ../../language/boundary/deep.nix
+    ../../language/boundary/observe.nix
+    ../../language/core/levels.nix
+    ../../language/core/traversal.nix
+    ../../language/evaluation/direct.nix
+    ../../language/evaluation/machine.nix
+    ../../language/kernel/checking.nix
+    ../../language/kernel/conversion.nix
+    ../../language/kernel/readback.nix
+    ../../language/kernel/representation.nix
+  ];
+  conversionSource = builtins.readFile ../../language/kernel/conversion.nix;
+  readbackSource = builtins.readFile ../../language/kernel/readback.nix;
+  transitionSource = builtins.readFile ../../language/kernel/neutral-elimination.nix;
+  semanticSource = builtins.readFile ../../language/kernel/semantic-ops.nix;
+  budgetSource = builtins.readFile ../../language/kernel/resources.nix;
+  representationSource = builtins.readFile ../../language/kernel/representation.nix;
+  flowSource = builtins.readFile ../../language/kernel/flow.nix;
+  defaultSource = builtins.readFile ../../language/kernel/default.nix;
+  schemaSource = builtins.readFile ../../language/evaluation/schema.nix;
+  checkingSource = builtins.readFile ../../language/kernel/checking.nix;
+  transitionalOwnersPresent = builtins.all builtins.pathExists [
+    ../../language/kernel/flow.nix
+    ../../language/kernel/resources.nix
+    ../../language/kernel/semantic-ops.nix
+    ../../language/kernel/neutral-elimination.nix
+  ];
+  forbiddenPlanText =
+    text:
+    builtins.any (needle: contains needle text) [
+      "makePlan"
+      ".plan"
+      "peerPlan"
+      "handlersClosed"
+      "neutralElimination"
+    ];
+  structuralReconciliation =
+    builtins.all (text: !(contains "builtins.genericClosure" text)) structuralSources
+    && !(forbiddenPlanText transitionSource)
+    && !(forbiddenPlanText conversionSource)
+    && !(forbiddenPlanText readbackSource)
+    && contains "logismos.budget.make" budgetSource
+    && contains "computation.bind" semanticSource
+    && contains "computation.bind" transitionSource
+    && contains "prepare =" transitionSource
+    && contains "observePhase =" transitionSource
+    && contains "advance =" transitionSource
+    && contains "writtenSpine = reverse args.spine" transitionSource
+    && contains "traversal.zipFold" transitionSource
+    && !(contains "builtins.elemAt" transitionSource)
+    && !(contains "builtins.tail" transitionSource)
+    && !(contains "logismos.transition.run" transitionSource)
+    && !(contains "stack.fromNewestFirst" transitionSource)
+    && !(contains "semantic.runStateful" transitionSource)
+    && !(contains "kernelState" transitionSource)
+    && !(contains "args //" transitionSource)
+    && contains "compareTypeProgram" conversionSource
+    && contains "compareValueProgram" conversionSource
+    && contains "inferProgram" checkingSource
+    && contains "checkProgram" checkingSource
+    && contains "formProgram" checkingSource
+    && !(contains "runProgram =" checkingSource)
+    && !(contains "kernelState" checkingSource)
+    && !(contains "worklist" checkingSource)
+    && !(contains "formAt =" checkingSource)
+    && !(contains "inferAt =" checkingSource)
+    && !(contains "checkAt =" checkingSource)
+    && !(contains "runProgram =" conversionSource)
+    && !(contains "neutralCompare =" conversionSource)
+    && !(contains "compareType =" conversionSource)
+    && !(contains "compareValue =" conversionSource)
+    && contains "neutralTransition.replay" conversionSource
+    && contains "neutralTransition.replay" readbackSource
+    && contains "reflect =" readbackSource
+    && contains "reify = quoteValue" readbackSource
+    && contains "sem.extendNeutral d.value d.item" transitionSource
+    && !(contains "extendNeutral" conversionSource)
+    && !(contains "extendNeutral" readbackSource)
+    && !(contains "boundedNewestFirst" representationSource)
+    && !(contains "internal/worklist" representationSource)
+    && !(contains "builtins.tail" transitionSource)
+    && !(contains "builtins.tail" readbackSource)
+    && !(contains "builtins.tail" conversionSource)
+    && !(contains "import ./flow.nix" defaultSource)
+    && !(contains "  flow," checkingSource)
+    && !(contains "semanticOps" checkingSource)
+    && !(contains "resources." checkingSource)
+    && !(contains "flow.andThen" conversionSource)
+    && !(contains "flow.andThen" readbackSource)
+    && contains "conversionRoles =" schemaSource
+    && transitionalOwnersPresent
+    && contains "andThen =" flowSource;
+  resourceFixture =
+    {
+      name,
+      expected,
+      actual,
+    }:
+    {
+      inherit name expected actual;
+      pass = actual == expected;
+    };
+  resourceEquivalenceMatrix = [
+    (resourceFixture {
+      name = "checking exact";
+      expected = {
+        ok = true;
+        checking = 1;
+      };
+      actual = {
+        inherit (checkingExact) ok;
+        checking = checkingExact.resources.checking or null;
+      };
+    })
+    (resourceFixture {
+      name = "checking refusal";
+      expected = {
+        ok = false;
+        kind = "resource-exhaustion";
+        budget = "checking";
+        limit = 0;
+        consumed = 0;
+      };
+      actual = {
+        inherit (checkingOneOver)
+          ok
+          kind
+          budget
+          limit
+          consumed
+          ;
+      };
+    })
+    (resourceFixture {
+      name = "context exact";
+      expected = {
+        ok = true;
+        context = 1;
+      };
+      actual = {
+        inherit (contextExact) ok;
+        context = contextExact.resources.context or null;
+      };
+    })
+    (resourceFixture {
+      name = "context refusal before inspection";
+      expected = {
+        ok = false;
+        kind = "resource-exhaustion";
+        budget = "context";
+        limit = 0;
+        consumed = 0;
+      };
+      actual = {
+        inherit (contextOneOver)
+          ok
+          kind
+          budget
+          limit
+          consumed
+          ;
+      };
+    })
+    (resourceFixture {
+      name = "binder context exact";
+      expected = {
+        ok = true;
+        context = 1;
+      };
+      actual = {
+        inherit (binderContextExact) ok;
+        context = binderContextExact.resources.context or null;
+      };
+    })
+    (resourceFixture {
+      name = "binder context refusal";
+      expected = {
+        ok = false;
+        kind = "resource-exhaustion";
+        budget = "context";
+      };
+      actual = {
+        inherit (binderContextOneOver)
+          ok
+          kind
+          budget
+          ;
+      };
+    })
+    (resourceFixture {
+      name = "conversion exact";
+      expected = {
+        ok = true;
+        conversion = 1;
+        comparison = 1;
+      };
+      actual = {
+        inherit (conversionExact) ok;
+        conversion = conversionExact.resources.conversion or null;
+        comparison = conversionExact.resources.comparison or null;
+      };
+    })
+    (resourceFixture {
+      name = "conversion refusal";
+      expected = {
+        ok = false;
+        kind = "resource-exhaustion";
+        budget = "conversion";
+      };
+      actual = {
+        inherit (conversionOneOver)
+          ok
+          kind
+          budget
+          ;
+      };
+    })
+    (resourceFixture {
+      name = "readback exact";
+      expected = {
+        ok = true;
+        readback = 1;
+        output = 1;
+      };
+      actual = {
+        inherit (readbackExact) ok;
+        readback = readbackExact.resources.readback or null;
+        output = readbackExact.resources.output or null;
+      };
+    })
+    (resourceFixture {
+      name = "readback refusal";
+      expected = {
+        ok = false;
+        kind = "resource-exhaustion";
+        budget = "readback";
+      };
+      actual = {
+        inherit (readbackOneOver)
+          ok
+          kind
+          budget
+          ;
+      };
+    })
+    (resourceFixture {
+      name = "level output exact";
+      expected = {
+        ok = true;
+        readback = 1;
+        output = 2;
+      };
+      actual = {
+        inherit (universeQuotationExact) ok;
+        readback = universeQuotationExact.resources.readback or null;
+        output = universeQuotationExact.resources.output or null;
+      };
+    })
+    (resourceFixture {
+      name = "level output refusal";
+      expected = {
+        ok = false;
+        kind = "resource-exhaustion";
+        budget = "output";
+      };
+      actual = {
+        inherit (universeQuotationOneOver)
+          ok
+          kind
+          budget
+          ;
+      };
+    })
+    (resourceFixture {
+      name = "oracle shared exact";
+      expected = {
+        ok = true;
+        readback = 2;
+        output = 2;
+      };
+      actual = {
+        inherit (oracleSharedExact) ok;
+        readback = oracleSharedExact.resources.readback or null;
+        output = oracleSharedExact.resources.output or null;
+      };
+    })
+    (resourceFixture {
+      name = "oracle shared refusal";
+      expected = {
+        ok = false;
+        kind = "resource-exhaustion";
+        budget = "readback";
+      };
+      actual = {
+        inherit (oracleSharedOneOver)
+          ok
+          kind
+          budget
+          ;
+      };
+    })
+    (resourceFixture {
+      name = "forced observations";
+      expected = {
+        ok = true;
+        forced = 0;
+      };
+      actual = {
+        inherit (unitConversion) ok;
+        forced = unitConversion.observations.forced or null;
+      };
+    })
+  ];
+  resourceEquivalent =
+    builtins.all (case: case.pass) resourceEquivalenceMatrix && hostileSpineRejected;
   evidence = {
     privateGeneration = kernel.generation == "axiom-kernel-1";
+    malformedLimits = malformedLimitsRejected;
+    hostileSpineValidation = hostileSpineRejected;
+    structuralMechanisms = structuralReconciliation;
+    resourceEquivalence = resourceEquivalent;
+    evaluationSchemaAgreement =
+      kernelRepresentation.evaluationGeneration == evaluation.representation.generation;
     publicFrozen =
       builtins.attrNames language == [
         "boundary"
@@ -553,6 +1018,11 @@ let
     generatedConversionOracleAgreement = generatedAgreement;
     rejectedEtaControls = sumEtaControl && emptyEtaControl && identityEtaControl;
     typedEliminatorReplay = unitElimination.ok && unitEliminationReadback.ok;
+    longSpineReplay =
+      longSpineContextResult.ok
+      && longSpineInference.ok
+      && longSpineReadback.ok
+      && longSpineReadback.value.root.kind == "unit";
     canonicityUnit = canonicalUnitReadback.ok && canonicalUnitReadback.value.root.kind == "unit";
     openNeutralProgress =
       openNeutralReadback.ok

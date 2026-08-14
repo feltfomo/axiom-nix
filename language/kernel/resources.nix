@@ -1,16 +1,64 @@
-{ representation, result }:
+{
+  logismos,
+  representation,
+  result,
+}:
 let
+  inherit (logismos) computation;
+  dimensions = [
+    "checking"
+    "comparison"
+    "context"
+    "conversion"
+    "depth"
+    "output"
+    "readback"
+  ];
+  zeroCost = builtins.listToAttrs (
+    map (name: {
+      inherit name;
+      value = 0;
+    }) dimensions
+  );
+  cost = name: amount: zeroCost // { ${name} = amount; };
+  algebra = logismos.budget.make {
+    inherit dimensions;
+    namedCosts = builtins.listToAttrs (
+      map
+        (name: {
+          inherit name;
+          value = cost name 1;
+        })
+        [
+          "checking"
+          "comparison"
+          "context"
+          "conversion"
+          "output"
+          "readback"
+        ]
+    );
+  };
   names = builtins.attrNames representation.limits;
-  initial = {
-    readback = 0;
-    output = 0;
-    comparison = 0;
-    conversion = 0;
-    checking = 0;
-    context = 0;
-    depth = 0;
+  initial = algebra.zero // {
     forced = 0;
   };
+  usage =
+    state:
+    builtins.listToAttrs (
+      map (name: {
+        inherit name;
+        value = state.${name};
+      }) dimensions
+    );
+  limit =
+    limits:
+    builtins.listToAttrs (
+      map (name: {
+        inherit name;
+        value = limits.${name};
+      }) dimensions
+    );
   resolve =
     judgment: depth: supplied:
     let
@@ -29,44 +77,45 @@ let
       }
     else
       result.internal judgment depth result.codes.malformedLimits;
-  merge = supplied: resolve "resources" 0 supplied;
-  charge =
-    judgment: limits: budget: state: depth:
-    if depth > limits.depth then
-      result.resource judgment depth "depth" limits.depth depth
-    else if state.${budget} >= limits.${budget} then
-      result.resource judgment depth budget limits.${budget} state.${budget}
-    else
-      {
-        ok = true;
-        state = state // {
-          ${budget} = state.${budget} + 1;
-          depth = if depth > state.depth then depth else state.depth;
-        };
-      };
   chargeAmount =
-    judgment: limits: budget: state: depth: amount:
-    if !builtins.isInt amount || amount < 0 then
-      result.internal judgment depth result.codes.impossibleState
-    else if depth > limits.depth then
-      result.resource judgment depth "depth" limits.depth depth
-    else if state.${budget} + amount > limits.${budget} then
-      result.resource judgment depth budget limits.${budget} state.${budget}
-    else
-      {
-        ok = true;
-        state = state // {
-          ${budget} = state.${budget} + amount;
-          depth = if depth > state.depth then depth else state.depth;
-        };
-      };
+    judgment: limits: name: depth: amount:
+    computation.bind computation.get (
+      state:
+      if !builtins.isInt amount || amount < 0 then
+        computation.fail (result.internal judgment depth result.codes.impossibleState)
+      else if depth > limits.depth then
+        computation.fail (result.resource judgment depth "depth" limits.depth depth)
+      else
+        computation.bind
+          (algebra.charge {
+            limit = limit limits;
+            usage = usage state;
+            cost = cost name amount;
+            refusal = result.resource judgment depth name limits.${name} state.${name};
+          })
+          (
+            charged:
+            computation.bind (computation.modify (
+              current:
+              current
+              // charged
+              // {
+                forced = current.forced or 0;
+                depth = if depth > charged.depth then depth else charged.depth;
+              }
+            )) (_unit: computation.pure null)
+          )
+    );
 in
 {
   inherit
+    algebra
     initial
     resolve
-    merge
-    charge
     chargeAmount
     ;
+  merge = supplied: resolve "resources" 0 supplied;
+  charge =
+    judgment: limits: name: depth:
+    chargeAmount judgment limits name depth 1;
 }

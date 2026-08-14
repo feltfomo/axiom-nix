@@ -5,11 +5,15 @@
   result,
   context,
   readback,
+  semantic,
+  budget,
   conversion,
+  logismos,
 }:
 let
   r = core.representation;
-  semantic = evaluation.representation;
+  sem = evaluation.representation;
+  inherit (logismos) computation;
   fail =
     judgment: ctx: expected: received:
     result.failure judgment ctx.depth result.codes.expectedType [ ] expected received;
@@ -18,807 +22,450 @@ let
     result.internal judgment ctx.depth (
       if checked.reason == "stale" then result.codes.staleGeneration else result.codes.malformedSemantic
     );
-  evalTerm =
-    ctx: term:
-    let
-      evaluated = evaluation.direct.runRoot {
-        root = term;
-        inherit (ctx) environment;
-      };
-      checked =
-        if evaluated.ok then
-          representation.semanticShape evaluated.value
-        else
-          {
-            ok = false;
-            reason = "malformed";
-          };
-    in
-    if !evaluated.ok then
-      result.internal "evaluation" ctx.depth result.codes.evaluation
-    else if !checked.ok then
-      semanticFailure "evaluation" ctx checked
-    else
-      {
-        ok = true;
-        inherit (evaluated) value;
-      };
-  charge =
-    judgment: ctx: state:
-    # every judgment transition charges the operation-owned state before inspecting syntax
-    if state.checking >= state.limits.checking then
-      result.resource judgment ctx.depth "checking" state.limits.checking state.checking
-    else if ctx.depth > state.limits.depth then
-      result.resource judgment ctx.depth "depth" state.limits.depth ctx.depth
-    else
-      {
-        ok = true;
-        state = state // {
-          checking = state.checking + 1;
-          depth = if ctx.depth > state.depth then ctx.depth else state.depth;
-        };
-      };
-  formAt =
-    ctx: term: state:
-    let
-      inferred = inferAt ctx term state;
-    in
-    if !inferred.ok then
-      inferred
-    else if inferred.type.kind != "universe" then
-      fail "formation" ctx "universe" inferred.type.kind
-    else
-      let
-        normalized = core.levels.normalize inferred.type.level;
-      in
-      if !normalized.ok then
-        result.internal "formation" ctx.depth result.codes.expectedType
-      else
-        {
-          ok = true;
-          type = inferred.value;
-          level = normalized.value;
-          inherit (inferred) state;
-        };
-  inferAt =
-    ctx: term: state:
-    let
-      paid = charge "inference" ctx state;
-    in
-    if !paid.ok then
-      paid
-    else if term.kind == "variable" then
-      let
-        found = context.lookup ctx term.level;
-        value = evalTerm ctx term;
-      in
-      if !found.ok then
-        found
-      else if !value.ok then
-        value
-      else
-        {
-          ok = true;
-          inherit (found) type;
-          inherit (value) value;
-          inherit (paid) state;
-        }
-    else if term.kind == "annotation" then
-      let
-        formed = formAt ctx term.annotation paid.state;
-      in
-      if !formed.ok then
-        formed
+  checkingFailure =
+    judgment: ctx: expected: received:
+    computation.fail (fail judgment ctx expected received);
+  semanticFailureProgram =
+    judgment: ctx: checked:
+    computation.fail (semanticFailure judgment ctx checked);
+  chargeProgram =
+    judgment: limits: ctx:
+    budget.charge judgment limits "checking" ctx.depth;
+  evalTermProgram = ctx: term: semantic.evalRoot "evaluation" ctx.environment term;
+  formProgram =
+    limits: ctx: term:
+    computation.bind (inferProgram limits ctx term) (
+      inferred:
+      if inferred.type.kind != "universe" then
+        checkingFailure "formation" ctx "universe" inferred.type.kind
       else
         let
-          checked = checkAt ctx term.subject formed.type formed.state;
+          normalized = core.levels.normalize inferred.type.level;
         in
-        if !checked.ok then
-          checked
+        if !normalized.ok then
+          computation.fail (result.internal "formation" ctx.depth result.codes.expectedType)
         else
-          let
-            value = evalTerm ctx term;
-          in
-          if !value.ok then
-            value
-          else
-            {
-              ok = true;
+          computation.pure {
+            type = inferred.value;
+            level = normalized.value;
+          }
+    );
+  inferProgram =
+    limits: ctx: term:
+    computation.bind (chargeProgram "inference" limits ctx) (
+      _paid:
+      if term.kind == "variable" then
+        let
+          found = context.lookup ctx term.level;
+        in
+        if !found.ok then
+          computation.fail found
+        else
+          computation.map (value: {
+            inherit (found) type;
+            inherit value;
+          }) (evalTermProgram ctx term)
+      else if term.kind == "annotation" then
+        computation.bind (formProgram limits ctx term.annotation) (
+          formed:
+          computation.bind (checkProgram limits ctx term.subject formed.type) (
+            _checked:
+            computation.map (value: {
               inherit (formed) type;
-              inherit (value) value;
-              inherit (checked) state;
-            }
-    else if term.kind == "application" then
-      let
-        function = inferAt ctx term.function paid.state;
-      in
-      if !function.ok then
-        function
-      else if function.type.kind != "pi" then
-        fail "inference" ctx "pi" function.type.kind
-      else
-        let
-          domain = readback.demand paid.state.limits function.state ctx.depth function.type.domain;
-        in
-        if !domain.ok then
-          domain
-        else
-          let
-            argument = checkAt ctx term.argument domain.value domain.state;
-          in
-          if !argument.ok then
-            argument
+              inherit value;
+            }) (evalTermProgram ctx term)
+          )
+        )
+      else if term.kind == "application" then
+        computation.bind (inferProgram limits ctx term.function) (
+          function:
+          if function.type.kind != "pi" then
+            checkingFailure "inference" ctx "pi" function.type.kind
           else
-            let
-              argumentValue = evalTerm ctx term.argument;
-            in
-            if !argumentValue.ok then
-              argumentValue
-            else
+            computation.bind (semantic.demand "checking" limits ctx.depth function.type.domain) (
+              domain:
+              computation.bind (checkProgram limits ctx term.argument domain) (
+                _argument:
+                computation.bind (evalTermProgram ctx term.argument) (
+                  argumentValue:
+                  computation.bind
+                    (semantic.apply "checking" limits ctx.depth function.type.codomain (sem.valueCell argumentValue))
+                    (
+                      codomain:
+                      computation.map (value: {
+                        type = codomain;
+                        inherit value;
+                      }) (evalTermProgram ctx term)
+                    )
+                )
+              )
+            )
+        )
+      else if term.kind == "universe" then
+        let
+          successor = core.levels.successor term.level;
+        in
+        if !successor.ok then
+          computation.fail (result.internal "formation" ctx.depth result.codes.expectedType)
+        else
+          computation.map (value: {
+            type = sem.universe successor.value;
+            inherit value;
+          }) (evalTermProgram ctx term)
+      else if term.kind == "unit-type" || term.kind == "empty-type" then
+        computation.map (value: {
+          type = sem.universe core.levels.zero;
+          inherit value;
+        }) (evalTermProgram ctx term)
+      else if term.kind == "pi" || term.kind == "sigma" then
+        computation.bind (formProgram limits ctx term.domain) (
+          domain:
+          computation.bind (context.extendComputed "context" limits ctx domain.type) (
+            extended:
+            computation.bind (formProgram limits extended term.codomain) (
+              codomain:
               let
-                codomain = readback.apply paid.state.limits argument.state ctx.depth function.type.codomain (
-                  semantic.valueCell argumentValue.value
-                );
+                maximum = core.levels.maximum domain.level codomain.level;
               in
-              if !codomain.ok then
-                codomain
+              if !maximum.ok then
+                computation.fail (result.internal "formation" ctx.depth result.codes.expectedType)
               else
-                let
-                  value = evalTerm ctx term;
-                in
-                if !value.ok then
-                  value
-                else
-                  {
-                    ok = true;
-                    type = codomain.value;
-                    inherit (value) value;
-                    inherit (codomain) state;
-                  }
-    else if term.kind == "universe" then
-      let
-        successor = core.levels.successor term.level;
-        value = evalTerm ctx term;
-      in
-      if !successor.ok then
-        result.internal "formation" ctx.depth result.codes.expectedType
-      else if !value.ok then
-        value
-      else
-        {
-          ok = true;
-          type = semantic.universe successor.value;
-          inherit (value) value;
-          inherit (paid) state;
-        }
-    else if term.kind == "unit-type" || term.kind == "empty-type" then
-      let
-        value = evalTerm ctx term;
-      in
-      if !value.ok then
-        value
-      else
-        {
-          ok = true;
-          type = semantic.universe core.levels.zero;
-          inherit (value) value;
-          inherit (paid) state;
-        }
-    else if term.kind == "pi" || term.kind == "sigma" then
-      let
-        domain = formAt ctx term.domain paid.state;
-      in
-      if !domain.ok then
-        domain
-      else
-        let
-          extended = readback.extendContext state.limits domain.state ctx domain.type;
-        in
-        if !extended.ok then
-          extended
-        else
-          let
-            codomain = formAt extended.value term.codomain extended.state;
-          in
-          if !codomain.ok then
-            codomain
-          else
+                computation.map (value: {
+                  type = sem.universe maximum.value;
+                  inherit value;
+                }) (evalTermProgram ctx term)
+            )
+          )
+        )
+      else if term.kind == "sum-type" then
+        computation.bind (formProgram limits ctx term.left) (
+          left:
+          computation.bind (formProgram limits ctx term.right) (
+            right:
             let
-              maximum = core.levels.maximum domain.level codomain.level;
-              value = evalTerm ctx term;
+              maximum = core.levels.maximum left.level right.level;
             in
             if !maximum.ok then
-              result.internal "formation" ctx.depth result.codes.expectedType
-            else if !value.ok then
-              value
+              computation.fail (result.internal "formation" ctx.depth result.codes.expectedType)
             else
-              {
-                ok = true;
-                type = semantic.universe maximum.value;
-                inherit (value) value;
-                inherit (codomain) state;
-              }
-    else if term.kind == "sum-type" then
-      let
-        left = formAt ctx term.left paid.state;
-      in
-      if !left.ok then
-        left
-      else
-        let
-          right = formAt ctx term.right left.state;
-        in
-        if !right.ok then
-          right
-        else
-          let
-            maximum = core.levels.maximum left.level right.level;
-            value = evalTerm ctx term;
-          in
-          if !maximum.ok then
-            result.internal "formation" ctx.depth result.codes.expectedType
-          else if !value.ok then
-            value
+              computation.map (value: {
+                type = sem.universe maximum.value;
+                inherit value;
+              }) (evalTermProgram ctx term)
+          )
+        )
+      else if term.kind == "identity-type" then
+        computation.bind (formProgram limits ctx term.carrier) (
+          carrier:
+          computation.bind (checkProgram limits ctx term.left carrier.type) (
+            _left:
+            computation.bind (checkProgram limits ctx term.right carrier.type) (
+              _right:
+              computation.map (value: {
+                type = sem.universe carrier.level;
+                inherit value;
+              }) (evalTermProgram ctx term)
+            )
+          )
+        )
+      else if term.kind == "sum-elimination" then
+        computation.bind (inferProgram limits ctx term.scrutinee) (
+          subject:
+          if subject.type.kind != "sum-type" then
+            checkingFailure "inference" ctx "sum-type" subject.type.kind
           else
-            {
-              ok = true;
-              type = semantic.universe maximum.value;
-              inherit (value) value;
-              inherit (right) state;
-            }
-    else if term.kind == "identity-type" then
-      let
-        carrier = formAt ctx term.carrier paid.state;
-      in
-      if !carrier.ok then
-        carrier
-      else
-        let
-          left = checkAt ctx term.left carrier.type carrier.state;
-        in
-        if !left.ok then
-          left
-        else
-          let
-            right = checkAt ctx term.right carrier.type left.state;
-          in
-          if !right.ok then
-            right
-          else
-            let
-              value = evalTerm ctx term;
-            in
-            if !value.ok then
-              value
-            else
-              {
-                ok = true;
-                type = semantic.universe carrier.level;
-                inherit (value) value;
-                inherit (right) state;
-              }
-    else if term.kind == "sum-elimination" then
-      let
-        subject = inferAt ctx term.scrutinee paid.state;
-      in
-      if !subject.ok then
-        subject
-      else if subject.type.kind != "sum-type" then
-        fail "inference" ctx "sum-type" subject.type.kind
-      else
-        let
-          motiveContext = readback.extendContext state.limits subject.state ctx subject.type;
-        in
-        if !motiveContext.ok then
-          motiveContext
-        else
-          let
-            motiveFormation = formAt motiveContext.value term.motive motiveContext.state;
-          in
-          if !motiveFormation.ok then
-            motiveFormation
-          else
-            let
-              motive = semantic.closure ctx.environment term.motive;
-              leftType = readback.demand paid.state.limits motiveFormation.state ctx.depth subject.type.left;
-            in
-            if !leftType.ok then
-              leftType
-            else
-              let
-                leftContext = readback.extendContext state.limits leftType.state ctx leftType.value;
-              in
-              if !leftContext.ok then
-                leftContext
-              else
+            computation.bind (context.extendComputed "context" limits ctx subject.type) (
+              motiveContext:
+              computation.bind (formProgram limits motiveContext term.motive) (
+                _motiveFormation:
                 let
-                  leftNeutral = semantic.neutral ctx.depth;
-                  leftExpected = readback.apply paid.state.limits leftContext.state (ctx.depth + 1) motive (
-                    semantic.valueCell (semantic.leftInjection (semantic.valueCell leftNeutral))
-                  );
+                  motive = sem.closure ctx.environment term.motive;
                 in
-                if !leftExpected.ok then
-                  leftExpected
-                else
-                  let
-                    leftChecked = checkAt leftContext.value term.leftBranch leftExpected.value leftExpected.state;
-                  in
-                  if !leftChecked.ok then
-                    leftChecked
-                  else
+                computation.bind (semantic.demand "checking" limits ctx.depth subject.type.left) (
+                  leftType:
+                  computation.bind (context.extendComputed "context" limits ctx leftType) (
+                    leftContext:
                     let
-                      rightType = readback.demand paid.state.limits leftChecked.state ctx.depth subject.type.right;
+                      leftNeutral = sem.neutral ctx.depth;
                     in
-                    if !rightType.ok then
-                      rightType
-                    else
-                      let
-                        rightContext = readback.extendContext state.limits rightType.state ctx rightType.value;
-                      in
-                      if !rightContext.ok then
-                        rightContext
-                      else
-                        let
-                          rightNeutral = semantic.neutral ctx.depth;
-                          rightExpected = readback.apply paid.state.limits rightContext.state (ctx.depth + 1) motive (
-                            semantic.valueCell (semantic.rightInjection (semantic.valueCell rightNeutral))
-                          );
-                        in
-                        if !rightExpected.ok then
-                          rightExpected
-                        else
-                          let
-                            rightChecked = checkAt rightContext.value term.rightBranch rightExpected.value rightExpected.state;
-                          in
-                          if !rightChecked.ok then
-                            rightChecked
-                          else
-                            let
-                              target = readback.apply paid.state.limits rightChecked.state ctx.depth motive (
-                                semantic.valueCell subject.value
-                              );
-                            in
-                            if !target.ok then
-                              target
-                            else
+                    computation.bind
+                      (semantic.apply "checking" limits (ctx.depth + 1) motive (
+                        sem.valueCell (sem.leftInjection (sem.valueCell leftNeutral))
+                      ))
+                      (
+                        leftExpected:
+                        computation.bind (checkProgram limits leftContext term.leftBranch leftExpected) (
+                          _left:
+                          computation.bind (semantic.demand "checking" limits ctx.depth subject.type.right) (
+                            rightType:
+                            computation.bind (context.extendComputed "context" limits ctx rightType) (
+                              rightContext:
                               let
-                                value = evalTerm ctx term;
+                                rightNeutral = sem.neutral ctx.depth;
                               in
-                              if !value.ok then
-                                value
-                              else
-                                {
-                                  ok = true;
-                                  type = target.value;
-                                  inherit (value) value;
-                                  inherit (target) state;
-                                }
-    else if term.kind == "unit-elimination" then
-      let
-        subject = inferAt ctx term.scrutinee paid.state;
-      in
-      if !subject.ok then
-        subject
-      else if subject.type.kind != "unit-type" then
-        fail "inference" ctx "unit-type" subject.type.kind
-      else
-        let
-          motiveContext = readback.extendContext state.limits subject.state ctx semantic.unitType;
-        in
-        if !motiveContext.ok then
-          motiveContext
-        else
-          let
-            motiveFormation = formAt motiveContext.value term.motive motiveContext.state;
-          in
-          if !motiveFormation.ok then
-            motiveFormation
-          else
-            let
-              motive = semantic.closure ctx.environment term.motive;
-              caseType = readback.apply paid.state.limits motiveFormation.state ctx.depth motive (
-                semantic.valueCell semantic.unit
-              );
-            in
-            if !caseType.ok then
-              caseType
-            else
-              let
-                caseChecked = checkAt ctx term.case caseType.value caseType.state;
-              in
-              if !caseChecked.ok then
-                caseChecked
-              else
-                let
-                  target = readback.apply paid.state.limits caseChecked.state ctx.depth motive (
-                    semantic.valueCell subject.value
-                  );
-                in
-                if !target.ok then
-                  target
-                else
-                  let
-                    value = evalTerm ctx term;
-                  in
-                  if !value.ok then
-                    value
-                  else
-                    {
-                      ok = true;
-                      type = target.value;
-                      inherit (value) value;
-                      inherit (target) state;
-                    }
-    else if term.kind == "empty-elimination" then
-      let
-        subject = inferAt ctx term.scrutinee paid.state;
-      in
-      if !subject.ok then
-        subject
-      else if subject.type.kind != "empty-type" then
-        fail "inference" ctx "empty-type" subject.type.kind
-      else
-        let
-          motiveContext = readback.extendContext state.limits subject.state ctx semantic.emptyType;
-        in
-        if !motiveContext.ok then
-          motiveContext
-        else
-          let
-            motiveFormation = formAt motiveContext.value term.motive motiveContext.state;
-          in
-          if !motiveFormation.ok then
-            motiveFormation
-          else
-            let
-              motive = semantic.closure ctx.environment term.motive;
-              target = readback.apply paid.state.limits motiveFormation.state ctx.depth motive (
-                semantic.valueCell subject.value
-              );
-            in
-            if !target.ok then
-              target
-            else
-              let
-                value = evalTerm ctx term;
-              in
-              if !value.ok then
-                value
-              else
-                {
-                  ok = true;
-                  type = target.value;
-                  inherit (value) value;
-                  inherit (target) state;
-                }
-    else if term.kind == "identity-elimination" then
-      let
-        subject = inferAt ctx term.scrutinee paid.state;
-      in
-      if !subject.ok then
-        subject
-      else if subject.type.kind != "identity-type" then
-        fail "inference" ctx "identity-type" subject.type.kind
-      else
-        let
-          carrier = readback.demand paid.state.limits subject.state ctx.depth subject.type.carrier;
-        in
-        if !carrier.ok then
-          carrier
-        else
-          let
-            sourceContext = readback.extendContext state.limits carrier.state ctx carrier.value;
-          in
-          if !sourceContext.ok then
-            sourceContext
-          else
-            let
-              targetContext =
-                readback.extendContext state.limits sourceContext.state sourceContext.value
-                  carrier.value;
-            in
-            if !targetContext.ok then
-              targetContext
-            else
-              let
-                sourceNeutral = semantic.neutral ctx.depth;
-                targetNeutral = semantic.neutral (ctx.depth + 1);
-                evidenceType =
-                  semantic.identityType (semantic.valueCell carrier.value) (semantic.valueCell sourceNeutral)
-                    (semantic.valueCell targetNeutral);
-                motiveContext =
-                  readback.extendContext state.limits targetContext.state targetContext.value
-                    evidenceType;
-              in
-              if !motiveContext.ok then
-                motiveContext
-              else
-                let
-                  motiveFormation = formAt motiveContext.value term.motive motiveContext.state;
-                in
-                if !motiveFormation.ok then
-                  motiveFormation
-                else
-                  let
-                    witnessContext = readback.extendContext state.limits motiveFormation.state ctx carrier.value;
-                  in
-                  if !witnessContext.ok then
-                    witnessContext
-                  else
-                    let
-                      witness = semantic.neutral ctx.depth;
-                      motiveEnvironment1 = semantic.extendEnvironment ctx.environment (semantic.valueCell witness);
-                      motiveEnvironment2 =
-                        if motiveEnvironment1.ok then
-                          semantic.extendEnvironment motiveEnvironment1.value (semantic.valueCell witness)
-                        else
-                          motiveEnvironment1;
-                      motiveEnvironment3 =
-                        if motiveEnvironment2.ok then
-                          semantic.extendEnvironment motiveEnvironment2.value (
-                            semantic.valueCell (semantic.refl (semantic.valueCell witness))
+                              computation.bind
+                                (semantic.apply "checking" limits (ctx.depth + 1) motive (
+                                  sem.valueCell (sem.rightInjection (sem.valueCell rightNeutral))
+                                ))
+                                (
+                                  rightExpected:
+                                  computation.bind (checkProgram limits rightContext term.rightBranch rightExpected) (
+                                    _right:
+                                    computation.bind (semantic.apply "checking" limits ctx.depth motive (sem.valueCell subject.value)) (
+                                      target:
+                                      computation.map (value: {
+                                        type = target;
+                                        inherit value;
+                                      }) (evalTermProgram ctx term)
+                                    )
+                                  )
+                                )
+                            )
                           )
-                        else
-                          motiveEnvironment2;
-                      reflExpected =
-                        if motiveEnvironment3.ok then
-                          evaluation.direct.runRoot {
-                            root = term.motive;
-                            environment = motiveEnvironment3.value;
-                          }
-                        else
-                          motiveEnvironment3;
-                    in
-                    if !reflExpected.ok then
-                      result.internal "inference" ctx.depth result.codes.evaluation
-                    else
-                      let
-                        reflChecked = checkAt witnessContext.value term.reflBranch reflExpected.value witnessContext.state;
-                      in
-                      if !reflChecked.ok then
-                        reflChecked
-                      else
-                        let
-                          left = readback.demand paid.state.limits reflChecked.state ctx.depth subject.type.left;
-                        in
-                        if !left.ok then
-                          left
-                        else
-                          let
-                            right = readback.demand paid.state.limits left.state ctx.depth subject.type.right;
-                          in
-                          if !right.ok then
-                            right
-                          else
-                            let
-                              env1 = semantic.extendEnvironment ctx.environment (semantic.valueCell left.value);
-                              env2 =
-                                if env1.ok then semantic.extendEnvironment env1.value (semantic.valueCell right.value) else env1;
-                              env3 =
-                                if env2.ok then semantic.extendEnvironment env2.value (semantic.valueCell subject.value) else env2;
-                              target =
-                                if env3.ok then
-                                  evaluation.direct.runRoot {
-                                    root = term.motive;
-                                    environment = env3.value;
-                                  }
-                                else
-                                  env3;
-                            in
-                            if !target.ok then
-                              result.internal "inference" ctx.depth result.codes.evaluation
-                            else
-                              let
-                                value = evalTerm ctx term;
-                              in
-                              if !value.ok then
-                                value
-                              else
-                                {
-                                  ok = true;
-                                  type = target.value;
-                                  inherit (value) value;
-                                  inherit (right) state;
-                                }
-    else if term.kind == "first-projection" || term.kind == "second-projection" then
-      let
-        pair = inferAt ctx term.pair paid.state;
-      in
-      if !pair.ok then
-        pair
-      else if pair.type.kind != "sigma" then
-        fail "inference" ctx "sigma" pair.type.kind
-      else
-        let
-          domain = readback.demand paid.state.limits pair.state ctx.depth pair.type.domain;
-        in
-        if !domain.ok then
-          domain
-        else
-          let
-            selected =
-              if term.kind == "first-projection" then
-                {
-                  ok = true;
-                  inherit (domain) value;
-                  inherit (domain) state;
-                }
-              else
+                        )
+                      )
+                  )
+                )
+              )
+            )
+        )
+      else if term.kind == "unit-elimination" then
+        computation.bind (inferProgram limits ctx term.scrutinee) (
+          subject:
+          if subject.type.kind != "unit-type" then
+            checkingFailure "inference" ctx "unit-type" subject.type.kind
+          else
+            computation.bind (context.extendComputed "context" limits ctx sem.unitType) (
+              motiveContext:
+              computation.bind (formProgram limits motiveContext term.motive) (
+                _motiveFormation:
                 let
-                  first = readback.project paid.state.limits domain.state ctx.depth "first" pair.value;
+                  motive = sem.closure ctx.environment term.motive;
                 in
-                if !first.ok then
-                  first
-                else
-                  readback.apply paid.state.limits first.state ctx.depth pair.type.codomain (
-                    semantic.valueCell first.value
-                  );
-            value = evalTerm ctx term;
-          in
-          if !selected.ok then
-            selected
-          else if !value.ok then
-            value
+                computation.bind (semantic.apply "checking" limits ctx.depth motive (sem.valueCell sem.unit)) (
+                  caseType:
+                  computation.bind (checkProgram limits ctx term.case caseType) (
+                    _case:
+                    computation.bind (semantic.apply "checking" limits ctx.depth motive (sem.valueCell subject.value)) (
+                      target:
+                      computation.map (value: {
+                        type = target;
+                        inherit value;
+                      }) (evalTermProgram ctx term)
+                    )
+                  )
+                )
+              )
+            )
+        )
+      else if term.kind == "empty-elimination" then
+        computation.bind (inferProgram limits ctx term.scrutinee) (
+          subject:
+          if subject.type.kind != "empty-type" then
+            checkingFailure "inference" ctx "empty-type" subject.type.kind
           else
-            {
-              ok = true;
-              type = selected.value;
-              inherit (value) value;
-              inherit (selected) state;
-            }
-    else
-      fail "inference" ctx "synthesizing constructor" term.kind;
-  checkAt =
-    ctx: term: expected: state:
+            computation.bind (context.extendComputed "context" limits ctx sem.emptyType) (
+              motiveContext:
+              computation.bind (formProgram limits motiveContext term.motive) (
+                _motiveFormation:
+                let
+                  motive = sem.closure ctx.environment term.motive;
+                in
+                computation.bind (semantic.apply "checking" limits ctx.depth motive (sem.valueCell subject.value)) (
+                  target:
+                  computation.map (value: {
+                    type = target;
+                    inherit value;
+                  }) (evalTermProgram ctx term)
+                )
+              )
+            )
+        )
+      else if term.kind == "identity-elimination" then
+        computation.bind (inferProgram limits ctx term.scrutinee) (
+          subject:
+          if subject.type.kind != "identity-type" then
+            checkingFailure "inference" ctx "identity-type" subject.type.kind
+          else
+            computation.bind (semantic.demand "checking" limits ctx.depth subject.type.carrier) (
+              carrier:
+              computation.bind (context.extendComputed "context" limits ctx carrier) (
+                sourceContext:
+                computation.bind (context.extendComputed "context" limits sourceContext carrier) (
+                  targetContext:
+                  let
+                    sourceNeutral = sem.neutral ctx.depth;
+                    targetNeutral = sem.neutral (ctx.depth + 1);
+                    evidenceType = sem.identityType (sem.valueCell carrier) (sem.valueCell sourceNeutral) (
+                      sem.valueCell targetNeutral
+                    );
+                  in
+                  computation.bind (context.extendComputed "context" limits targetContext evidenceType) (
+                    motiveContext:
+                    computation.bind (formProgram limits motiveContext term.motive) (
+                      _motiveFormation:
+                      computation.bind (context.extendComputed "context" limits ctx carrier) (
+                        witnessContext:
+                        let
+                          witness = sem.neutral ctx.depth;
+                          env1 = sem.extendEnvironment ctx.environment (sem.valueCell witness);
+                          env2 = if env1.ok then sem.extendEnvironment env1.value (sem.valueCell witness) else env1;
+                          env3 =
+                            if env2.ok then
+                              sem.extendEnvironment env2.value (sem.valueCell (sem.refl (sem.valueCell witness)))
+                            else
+                              env2;
+                        in
+                        if !env3.ok then
+                          computation.fail (result.internal "inference" ctx.depth result.codes.evaluation)
+                        else
+                          computation.bind (semantic.evalRoot "evaluation" env3.value term.motive) (
+                            reflExpected:
+                            computation.bind (checkProgram limits witnessContext term.reflBranch reflExpected) (
+                              _refl:
+                              computation.bind (semantic.demand "checking" limits ctx.depth subject.type.left) (
+                                left:
+                                computation.bind (semantic.demand "checking" limits ctx.depth subject.type.right) (
+                                  right:
+                                  let
+                                    targetEnv1 = sem.extendEnvironment ctx.environment (sem.valueCell left);
+                                    targetEnv2 =
+                                      if targetEnv1.ok then sem.extendEnvironment targetEnv1.value (sem.valueCell right) else targetEnv1;
+                                    targetEnv3 =
+                                      if targetEnv2.ok then
+                                        sem.extendEnvironment targetEnv2.value (sem.valueCell subject.value)
+                                      else
+                                        targetEnv2;
+                                  in
+                                  if !targetEnv3.ok then
+                                    computation.fail (result.internal "inference" ctx.depth result.codes.evaluation)
+                                  else
+                                    computation.bind (semantic.evalRoot "evaluation" targetEnv3.value term.motive) (
+                                      target:
+                                      computation.map (value: {
+                                        type = target;
+                                        inherit value;
+                                      }) (evalTermProgram ctx term)
+                                    )
+                                )
+                              )
+                            )
+                          )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+        )
+      else if term.kind == "first-projection" || term.kind == "second-projection" then
+        computation.bind (inferProgram limits ctx term.pair) (
+          pair:
+          if pair.type.kind != "sigma" then
+            checkingFailure "inference" ctx "sigma" pair.type.kind
+          else
+            computation.bind (semantic.demand "checking" limits ctx.depth pair.type.domain) (
+              domain:
+              computation.bind
+                (
+                  if term.kind == "first-projection" then
+                    computation.pure domain
+                  else
+                    computation.bind (semantic.project "checking" limits ctx.depth "first" pair.value) (
+                      first: semantic.apply "checking" limits ctx.depth pair.type.codomain (sem.valueCell first)
+                    )
+                )
+                (
+                  selected:
+                  computation.map (value: {
+                    type = selected;
+                    inherit value;
+                  }) (evalTermProgram ctx term)
+                )
+            )
+        )
+      else
+        checkingFailure "inference" ctx "synthesizing constructor" term.kind
+    );
+  checkProgram =
+    limits: ctx: term: expected:
+    computation.bind (chargeProgram "checking" limits ctx) (
+      _paid:
+      let
+        checkedExpected = representation.semanticShape expected;
+      in
+      if !checkedExpected.ok then
+        semanticFailureProgram "checking" ctx checkedExpected
+      else if term.kind == "lambda" && expected.kind == "pi" then
+        computation.bind (semantic.demand "checking" limits ctx.depth expected.domain) (
+          domain:
+          computation.bind (context.extendComputed "context" limits ctx domain) (
+            extended:
+            computation.bind (semantic.apply "checking" limits (ctx.depth + 1) expected.codomain (
+              sem.valueCell (sem.neutral ctx.depth)
+            )) (codomain: checkProgram limits extended term.body codomain)
+          )
+        )
+      else if term.kind == "pair" && expected.kind == "sigma" then
+        computation.bind (semantic.demand "checking" limits ctx.depth expected.domain) (
+          domain:
+          computation.bind (checkProgram limits ctx term.first domain) (
+            _first:
+            computation.bind (evalTermProgram ctx term.first) (
+              firstValue:
+              computation.bind (semantic.apply "checking" limits ctx.depth expected.codomain (
+                sem.valueCell firstValue
+              )) (codomain: checkProgram limits ctx term.second codomain)
+            )
+          )
+        )
+      else if
+        (term.kind == "left-injection" || term.kind == "right-injection") && expected.kind == "sum-type"
+      then
+        computation.bind (semantic.demand "checking" limits ctx.depth (
+          if term.kind == "left-injection" then expected.left else expected.right
+        )) (side: checkProgram limits ctx term.value side)
+      else if term.kind == "unit" && expected.kind == "unit-type" then
+        computation.pure null
+      else if term.kind == "refl" && expected.kind == "identity-type" then
+        computation.bind (semantic.demand "checking" limits ctx.depth expected.carrier) (
+          carrier:
+          computation.bind (checkProgram limits ctx term.value carrier) (
+            _witness:
+            computation.bind (evalTermProgram ctx term.value) (
+              witness:
+              computation.bind (semantic.demand "checking" limits ctx.depth expected.left) (
+                left:
+                computation.bind (semantic.demand "checking" limits ctx.depth expected.right) (
+                  right:
+                  computation.bind (conversion.compareValueProgram limits ctx carrier witness left) (
+                    _left: conversion.compareValueProgram limits ctx carrier witness right
+                  )
+                )
+              )
+            )
+          )
+        )
+      else
+        computation.bind (inferProgram limits ctx term) (
+          inferred: conversion.compareTypeProgram limits ctx inferred.type expected
+        )
+    );
+  materializeProgram =
+    judgment: state: program:
     let
-      paid = charge "checking" ctx state;
-      checkedExpected = representation.semanticShape expected;
+      executed = semantic.runStateful {
+        inherit judgment state program;
+      };
     in
-    if !paid.ok then
-      paid
-    else if !checkedExpected.ok then
-      semanticFailure "checking" ctx checkedExpected
-    else if term.kind == "lambda" && expected.kind == "pi" then
-      let
-        domain = readback.demand paid.state.limits paid.state ctx.depth expected.domain;
-      in
-      if !domain.ok then
-        domain
-      else
-        let
-          extended = readback.extendContext state.limits domain.state ctx domain.value;
-        in
-        if !extended.ok then
-          extended
-        else
-          let
-            codomain = readback.apply paid.state.limits extended.state (ctx.depth + 1) expected.codomain (
-              semantic.valueCell (semantic.neutral ctx.depth)
-            );
-          in
-          if !codomain.ok then codomain else checkAt extended.value term.body codomain.value codomain.state
-    else if term.kind == "pair" && expected.kind == "sigma" then
-      let
-        domain = readback.demand paid.state.limits paid.state ctx.depth expected.domain;
-      in
-      if !domain.ok then
-        domain
-      else
-        let
-          first = checkAt ctx term.first domain.value domain.state;
-        in
-        if !first.ok then
-          first
-        else
-          let
-            firstValue = evalTerm ctx term.first;
-          in
-          if !firstValue.ok then
-            firstValue
-          else
-            let
-              codomain = readback.apply paid.state.limits first.state ctx.depth expected.codomain (
-                semantic.valueCell firstValue.value
-              );
-            in
-            if !codomain.ok then codomain else checkAt ctx term.second codomain.value codomain.state
-    else if
-      (term.kind == "left-injection" || term.kind == "right-injection") && expected.kind == "sum-type"
-    then
-      let
-        cell = if term.kind == "left-injection" then expected.left else expected.right;
-        side = readback.demand paid.state.limits paid.state ctx.depth cell;
-      in
-      if !side.ok then side else checkAt ctx term.value side.value side.state
-    else if term.kind == "unit" && expected.kind == "unit-type" then
+    if executed.ok then
       {
         ok = true;
-        inherit (paid) state;
+        inherit (executed) value;
+        inherit (executed) state;
       }
-    else if term.kind == "refl" && expected.kind == "identity-type" then
-      let
-        carrier = readback.demand paid.state.limits paid.state ctx.depth expected.carrier;
-      in
-      if !carrier.ok then
-        carrier
-      else
-        let
-          witness = checkAt ctx term.value carrier.value carrier.state;
-        in
-        if !witness.ok then
-          witness
-        else
-          let
-            witnessValue = evalTerm ctx term.value;
-          in
-          if !witnessValue.ok then
-            witnessValue
-          else
-            let
-              left = readback.demand paid.state.limits witness.state ctx.depth expected.left;
-            in
-            if !left.ok then
-              left
-            else
-              let
-                right = readback.demand paid.state.limits left.state ctx.depth expected.right;
-              in
-              if !right.ok then
-                right
-              else
-                let
-                  a = conversion.compareTermsAt {
-                    contextValue = ctx;
-                    type = carrier.value;
-                    left = witnessValue.value;
-                    right = left.value;
-                    limits = paid.state.limits;
-                    inherit (right) state;
-                  };
-                in
-                if !a.ok then
-                  a
-                else
-                  let
-                    b = conversion.compareTermsAt {
-                      contextValue = ctx;
-                      type = carrier.value;
-                      left = witnessValue.value;
-                      right = right.value;
-                      limits = paid.state.limits;
-                      inherit (a) state;
-                    };
-                  in
-                  if !b.ok then
-                    b
-                  else
-                    {
-                      ok = true;
-                      inherit (b) state;
-                    }
     else
-      let
-        inferred = inferAt ctx term paid.state;
-      in
-      if !inferred.ok then
-        inferred
-      else
-        let
-          same = conversion.compareTypesAt {
-            contextValue = ctx;
-            left = inferred.type;
-            right = expected;
-            limits = paid.state.limits;
-            inherit (inferred) state;
-          };
-        in
-        if !same.ok then
-          same
-        else
-          {
-            ok = true;
-            inherit (same) state;
-          };
+      executed.failure;
   admitRoot =
     ctx: envelope:
     if !context.validate ctx then
@@ -834,171 +481,68 @@ let
           ok = true;
           term = admitted.value.root;
         };
-  checkContext =
+  checkContextProgram =
+    limits: entries:
+    let
+      built = builtins.foldl' (
+        current: envelope:
+        computation.bind current (
+          ctx:
+          computation.bind (budget.charge "context" limits "context" ctx.depth) (
+            _context:
+            let
+              admitted = admitRoot ctx envelope;
+            in
+            if !admitted.ok then
+              computation.fail admitted
+            else
+              computation.bind (formProgram limits ctx admitted.term) (
+                formed:
+                let
+                  extended = context.extend ctx formed.type;
+                in
+                if !extended.ok then computation.fail extended else computation.pure extended.value
+              )
+          )
+        )
+      ) (computation.pure context.empty) entries;
+    in
+    computation.bind built (
+      checkedContext:
+      computation.bind (computation.modify (
+        state:
+        state
+        // {
+          inherit (checkedContext) depth;
+        }
+      )) (_depth: computation.pure checkedContext)
+    );
+  checkContextComposed =
     {
       entries,
       limits ? { },
     }:
     let
-      bounded = representation.limits // limits;
+      resolved = budget.merge limits;
       outer = builtins.tryEval (builtins.isList entries);
-      states =
-        if !outer.success || !outer.value then
-          [ ]
+      executed =
+        if resolved.ok && outer.success && outer.value then
+          materializeProgram "context" budget.initial (checkContextProgram resolved.value entries)
         else
-          builtins.genericClosure {
-            startSet = [
-              {
-                key = 0;
-                status = "running";
-                remaining = entries;
-                value = context.empty;
-                kernelState = readback.initial // {
-                  limits = bounded;
-                };
-                consumed = 0;
-                failure = null;
-              }
-            ];
-            operator =
-              state:
-              if state.status != "running" then
-                [ ]
-              else
-                let
-                  empty = builtins.tryEval (state.remaining == [ ]);
-                  nextKey = state.key + 1;
-                in
-                if !empty.success then
-                  [
-                    (
-                      state
-                      // {
-                        key = nextKey;
-                        status = "done";
-                        failure = result.internal "context" state.value.depth result.codes.malformedContext;
-                      }
-                    )
-                  ]
-                else if empty.value then
-                  [
-                    (
-                      state
-                      // {
-                        key = nextKey;
-                        status = "done";
-                      }
-                    )
-                  ]
-                else if state.consumed >= bounded.context then
-                  [
-                    (
-                      state
-                      // {
-                        key = nextKey;
-                        status = "done";
-                        failure = result.resource "context" state.value.depth "context" bounded.context state.consumed;
-                      }
-                    )
-                  ]
-                else
-                  let
-                    observed = builtins.tryEval (
-                      let
-                        entry = builtins.head state.remaining;
-                        tail = builtins.tail state.remaining;
-                      in
-                      builtins.seq entry (builtins.seq tail { inherit entry tail; })
-                    );
-                  in
-                  if !observed.success then
-                    [
-                      (
-                        state
-                        // {
-                          key = nextKey;
-                          status = "done";
-                          failure = result.internal "context" state.value.depth result.codes.malformedContext;
-                        }
-                      )
-                    ]
-                  else
-                    let
-                      admitted = admitRoot state.value observed.value.entry;
-                    in
-                    if !admitted.ok then
-                      [
-                        (
-                          state
-                          // {
-                            key = nextKey;
-                            status = "done";
-                            failure = admitted;
-                          }
-                        )
-                      ]
-                    else
-                      let
-                        formed = formAt state.value admitted.term (state.kernelState // { context = state.consumed + 1; });
-                      in
-                      if !formed.ok then
-                        [
-                          (
-                            state
-                            // {
-                              key = nextKey;
-                              status = "done";
-                              failure = formed;
-                            }
-                          )
-                        ]
-                      else
-                        let
-                          extended = context.extend state.value formed.type;
-                        in
-                        if !extended.ok then
-                          [
-                            (
-                              state
-                              // {
-                                key = nextKey;
-                                status = "done";
-                                failure = extended;
-                              }
-                            )
-                          ]
-                        else
-                          [
-                            (
-                              state
-                              // {
-                                key = nextKey;
-                                remaining = observed.value.tail;
-                                inherit (extended) value;
-                                kernelState = formed.state;
-                                consumed = state.consumed + 1;
-                              }
-                            )
-                          ];
-          };
-      final = if states == [ ] then null else builtins.elemAt states (builtins.length states - 1);
+          null;
     in
-    if !outer.success || !outer.value then
+    if !resolved.ok then
+      resolved
+    else if !outer.success || !outer.value then
       result.internal "context" 0 result.codes.malformedContext
-    else if final.failure != null then
-      final.failure
+    else if !executed.ok then
+      executed
     else
       result.checkedContext {
-        context = final.value;
-        resources = representation.resources (
-          final.kernelState
-          // {
-            context = final.consumed;
-            depth = final.value.depth;
-          }
-        );
+        context = executed.value;
+        resources = representation.resources executed.state;
       };
-  form =
+  formComposed =
     {
       contextValue,
       envelope,
@@ -1006,23 +550,27 @@ let
     }:
     let
       admitted = admitRoot contextValue envelope;
+      resolved = budget.merge limits;
+      executed =
+        if admitted.ok && resolved.ok then
+          materializeProgram "formation" budget.initial (
+            formProgram resolved.value contextValue admitted.term
+          )
+        else
+          null;
     in
     if !admitted.ok then
       admitted
+    else if !resolved.ok then
+      resolved
+    else if !executed.ok then
+      executed
     else
-      let
-        bounded = representation.limits // limits;
-        formed = formAt contextValue admitted.term (readback.initial // { limits = bounded; });
-      in
-      if !formed.ok then
-        formed
-      else
-        result.formation {
-          inherit (formed) level;
-          inherit (formed) type;
-          resources = representation.resources formed.state;
-        };
-  infer =
+      result.formation {
+        inherit (executed.value) level type;
+        resources = representation.resources executed.state;
+      };
+  inferComposed =
     {
       contextValue,
       envelope,
@@ -1030,23 +578,27 @@ let
     }:
     let
       admitted = admitRoot contextValue envelope;
+      resolved = budget.merge limits;
+      executed =
+        if admitted.ok && resolved.ok then
+          materializeProgram "inference" budget.initial (
+            inferProgram resolved.value contextValue admitted.term
+          )
+        else
+          null;
     in
     if !admitted.ok then
       admitted
+    else if !resolved.ok then
+      resolved
+    else if !executed.ok then
+      executed
     else
-      let
-        bounded = representation.limits // limits;
-        inferred = inferAt contextValue admitted.term (readback.initial // { limits = bounded; });
-      in
-      if !inferred.ok then
-        inferred
-      else
-        result.inference {
-          inherit (inferred) type;
-          inherit (inferred) value;
-          resources = representation.resources inferred.state;
-        };
-  check =
+      result.inference {
+        inherit (executed.value) type value;
+        resources = representation.resources executed.state;
+      };
+  checkComposed =
     {
       contextValue,
       envelope,
@@ -1055,34 +607,29 @@ let
     }:
     let
       admitted = admitRoot contextValue envelope;
+      resolved = budget.merge limits;
+      program = computation.bind (checkProgram resolved.value contextValue admitted.term expected) (
+        _checked: evalTermProgram contextValue admitted.term
+      );
+      executed =
+        if admitted.ok && resolved.ok then materializeProgram "checking" budget.initial program else null;
     in
     if !admitted.ok then
       admitted
+    else if !resolved.ok then
+      resolved
+    else if !executed.ok then
+      executed
     else
-      let
-        bounded = representation.limits // limits;
-        checked = checkAt contextValue admitted.term expected (readback.initial // { limits = bounded; });
-      in
-      if !checked.ok then
-        checked
-      else
-        let
-          value = evalTerm contextValue admitted.term;
-        in
-        if !value.ok then
-          value
-        else
-          result.checking {
-            type = expected;
-            inherit (value) value;
-            resources = representation.resources checked.state;
-          };
+      result.checking {
+        type = expected;
+        inherit (executed) value;
+        resources = representation.resources executed.state;
+      };
 in
 {
-  inherit
-    checkContext
-    form
-    infer
-    check
-    ;
+  checkContext = checkContextComposed;
+  form = formComposed;
+  infer = inferComposed;
+  check = checkComposed;
 }

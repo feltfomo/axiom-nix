@@ -2,6 +2,8 @@
   evaluation,
   representation,
   result,
+  budget,
+  logismos,
 }:
 let
   semantic = evaluation.representation;
@@ -10,6 +12,7 @@ let
     result.internal judgment depth (
       if checked.reason == "stale" then result.codes.staleGeneration else result.codes.malformedSemantic
     );
+  inherit (logismos) computation;
   validate = representation.contextShape;
   empty = representation.context 0 (semantic.initialEnvironment 0) { };
   extend =
@@ -50,6 +53,15 @@ let
             }
           else
             result.internal "context" level result.codes.impossibleState;
+  extendComputed =
+    judgment: limits: context: type:
+    computation.bind (budget.charge judgment limits "context" context.depth) (
+      _charged:
+      let
+        extended = extend context type;
+      in
+      if extended.ok then computation.pure extended.value else computation.fail extended
+    );
   lookup =
     context: level:
     if !validate context then
@@ -69,6 +81,7 @@ in
     validate
     empty
     extend
+    extendComputed
     lookup
     ;
 }
