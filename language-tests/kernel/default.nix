@@ -641,19 +641,17 @@ let
   ];
   conversionSource = builtins.readFile ../../language/kernel/conversion.nix;
   readbackSource = builtins.readFile ../../language/kernel/readback.nix;
-  transitionSource = builtins.readFile ../../language/kernel/neutral-elimination.nix;
-  semanticSource = builtins.readFile ../../language/kernel/semantic-ops.nix;
-  budgetSource = builtins.readFile ../../language/kernel/resources.nix;
+  transitionSource = builtins.readFile ../../language/kernel/neutral-transition.nix;
+  semanticSource = builtins.readFile ../../language/kernel/semantic.nix;
+  budgetSource = builtins.readFile ../../language/kernel/budget.nix;
   representationSource = builtins.readFile ../../language/kernel/representation.nix;
-  flowSource = builtins.readFile ../../language/kernel/flow.nix;
   defaultSource = builtins.readFile ../../language/kernel/default.nix;
   schemaSource = builtins.readFile ../../language/evaluation/schema.nix;
   checkingSource = builtins.readFile ../../language/kernel/checking.nix;
   transitionalOwnersPresent = builtins.all builtins.pathExists [
-    ../../language/kernel/flow.nix
-    ../../language/kernel/resources.nix
-    ../../language/kernel/semantic-ops.nix
-    ../../language/kernel/neutral-elimination.nix
+    ../../language/kernel/budget.nix
+    ../../language/kernel/semantic.nix
+    ../../language/kernel/neutral-transition.nix
   ];
   forbiddenPlanText =
     text:
@@ -711,15 +709,13 @@ let
     && !(contains "builtins.tail" transitionSource)
     && !(contains "builtins.tail" readbackSource)
     && !(contains "builtins.tail" conversionSource)
-    && !(contains "import ./flow.nix" defaultSource)
     && !(contains "  flow," checkingSource)
     && !(contains "semanticOps" checkingSource)
     && !(contains "resources." checkingSource)
     && !(contains "flow.andThen" conversionSource)
     && !(contains "flow.andThen" readbackSource)
     && contains "conversionRoles =" schemaSource
-    && transitionalOwnersPresent
-    && contains "andThen =" flowSource;
+    && transitionalOwnersPresent;
   resourceFixture =
     {
       name,

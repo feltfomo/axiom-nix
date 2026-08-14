@@ -4,7 +4,7 @@ let
   evaluation = import ../evaluation { inherit core; };
   representation = import ./representation.nix { inherit evaluation; };
   result = import ./result.nix { inherit representation core; };
-  budget = import ./resources.nix { inherit logismos representation result; };
+  budget = import ./budget.nix { inherit logismos representation result; };
   context = import ./context.nix {
     inherit
       evaluation
@@ -14,7 +14,7 @@ let
       logismos
       ;
   };
-  semantic = import ./semantic-ops.nix {
+  semantic = import ./semantic.nix {
     inherit
       core
       evaluation
@@ -24,7 +24,7 @@ let
       logismos
       ;
   };
-  neutralTransition = import ./neutral-elimination.nix {
+  neutralTransition = import ./neutral-transition.nix {
     inherit
       evaluation
       representation
