@@ -257,9 +257,16 @@ See [Laws and laziness](laws-and-laziness.md) before adding validators around de
 - [Recipes](recipes.md)
 - [Laws and laziness](laws-and-laziness.md)
 
-## Verification
+## Development
+
+The repository uses devenv for its command surface. Enter the environment once, then use the same commands locally and in CI.
 
 ```fish
-nix fmt
-nix flake check -L
+devenv shell
+axiom-fmt
+axiom-check
+axiom-test
+axiom-gate
 ```
+
+`axiom-check` runs the non-mutating formatter and static-analysis checks. `axiom-test` runs every semantic test through nix-unit, with failures reported by subsystem and case. `axiom-gate` runs both. The host may use Lix; the test runner is the Nix-backed `nix-unit` package supplied by the environment.

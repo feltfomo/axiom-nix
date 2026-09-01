@@ -1,0 +1,20 @@
+[global]
+excludes = [
+  ".devenv/**",
+  ".direnv/**",
+  ".git/**",
+  ".notion-sync/**",
+  ".pre-commit-config.yaml",
+  "docs/**",
+  "result",
+  "result-*",
+]
+
+[formatter.nixfmt]
+command = "nixfmt"
+includes = ["*.nix"]
+
+[formatter.taplo]
+command = "taplo"
+options = ["format"]
+includes = ["*.toml"]

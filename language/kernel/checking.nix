@@ -4,14 +4,12 @@
   representation,
   result,
   context,
-  readback,
   semantic,
   budget,
   conversion,
   logismos,
 }:
 let
-  r = core.representation;
   sem = evaluation.representation;
   inherit (logismos) computation;
   fail =

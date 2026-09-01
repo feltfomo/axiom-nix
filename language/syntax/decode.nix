@@ -2,8 +2,6 @@
 let
   inherit (core) representation traversal operations;
   operation = "decode-core-syntax";
-  attrs = import ../internal/attrs.nix;
-  inherit (attrs) exact;
   mismatch =
     expected: observed: path:
     result.mismatch {

@@ -645,7 +645,6 @@ let
   semanticSource = builtins.readFile ../../language/kernel/semantic.nix;
   budgetSource = builtins.readFile ../../language/kernel/budget.nix;
   representationSource = builtins.readFile ../../language/kernel/representation.nix;
-  defaultSource = builtins.readFile ../../language/kernel/default.nix;
   schemaSource = builtins.readFile ../../language/evaluation/schema.nix;
   checkingSource = builtins.readFile ../../language/kernel/checking.nix;
   transitionalOwnersPresent = builtins.all builtins.pathExists [
