@@ -555,29 +555,80 @@ let
       }
   );
   dependentRelation = execute (
-    relation.dependentProduct integerEquality
-      (
-        leftFirst: rightFirst: leftSecond: rightSecond:
-        if leftFirst == rightFirst then integerEquality leftSecond rightSecond else poison.poison
-      )
-      {
-        first = 2;
-        second = 6;
-      }
-      {
-        first = 2;
-        second = 6;
-      }
+    relation.dependentProduct {
+      leftFirst = computation.pure 2;
+      rightFirst = computation.pure 2;
+      firstRelation = integerEquality;
+      secondRelation =
+        leftFirst: rightFirst: if leftFirst == rightFirst then integerEquality 6 6 else poison.poison;
+    }
+  );
+  dependentOrder = execute (
+    relation.dependentProduct {
+      leftFirst = computation.bind (emit "dependent-left") (_unit: computation.pure 2);
+      rightFirst = computation.bind (emit "dependent-right") (_unit: computation.pure 2);
+      firstRelation =
+        left: right: computation.bind (emit "dependent-first") (_unit: integerEquality left right);
+      secondRelation = _left: _right: emit "dependent-second";
+    }
+  );
+  dependentFailure = execute (
+    relation.dependentProduct {
+      leftFirst = computation.pure 1;
+      rightFirst = computation.pure 2;
+      firstRelation = integerEquality;
+      secondRelation = _left: _right: poison.poison;
+    }
+  );
+  dependentLeftObservationFailure = execute (
+    relation.dependentProduct {
+      leftFirst = computation.fail poison.opaqueFailure;
+      rightFirst = poison.poison;
+      firstRelation = _left: _right: poison.poison;
+      secondRelation = _left: _right: poison.poison;
+    }
   );
   extensionalRelation = execute (
     relation.extensional {
-      fresh = 3;
-      apply = function: function;
-      relation = integerEquality;
+      witness = computation.pure 3;
+      apply = function: fresh: computation.pure (function fresh);
+      codomain = _fresh: computation.pure "integer";
+      relation = _fresh: _type: integerEquality;
     } (value: value + 1) (value: value + 1)
+  );
+  extensionalOrder = execute (
+    relation.extensional {
+      witness = computation.bind (emit "extensional-witness") (_unit: computation.pure 3);
+      apply =
+        side: retained: computation.bind (emit "extensional-${side}") (_unit: computation.pure retained);
+      codomain =
+        retained: computation.bind (emit "extensional-codomain") (_unit: computation.pure retained);
+      relation =
+        retained: bodyType: leftBody: rightBody:
+        computation.bind (emit "extensional-relation") (
+          _unit: integerEquality (retained + bodyType + leftBody + rightBody) 12
+        );
+    } "left" "right"
+  );
+  extensionalLeftFailure = execute (
+    relation.extensional {
+      witness = computation.pure 3;
+      apply =
+        side: _retained: if side == "left" then computation.fail poison.opaqueFailure else poison.poison;
+      codomain = _retained: poison.poison;
+      relation =
+        _retained: _type: _left: _right:
+        poison.poison;
+    } "left" "right"
   );
   pointwiseRelation = execute (
     relation.pointwise integerEquality poison.opaqueFailure [ 1 2 3 ] [ 1 2 3 ]
+  );
+  pointwiseCompleteFailure = execute (
+    relation.pointwise integerEquality poison.opaqueFailure [ 1 2 ] [ 1 3 ]
+  );
+  pointwiseFirstFailureLazy = execute (
+    relation.pointwise integerEquality poison.opaqueFailure [ 1 poison.poison ] [ 2 poison.poison ]
   );
 
   budget = logismos.budget.make {
@@ -634,6 +685,31 @@ let
   stackSource = builtins.readFile ../../language/logismos/stack.nix;
   transitionSource = builtins.readFile ../../language/logismos/transition.nix;
   traversalSource = builtins.readFile ../../language/logismos/traversal.nix;
+  malformedRelationFactory = builtins.tryEval (
+    builtins.seq
+      (import ../../language/logismos/construct.nix {
+        observer = (import ../../language/internal/operation-observer.nix).silent;
+        relationFactory = {
+          identity = "malformed";
+        };
+      }).components.relation
+      true
+  );
+  malformedRelationImplementation = builtins.tryEval (
+    builtins.seq
+      (import ../../language/logismos/construct.nix {
+        observer = (import ../../language/internal/operation-observer.nix).silent;
+        relationFactory = {
+          identity = "malformed-implementation";
+          build = _args: {
+            product =
+              _left: _right: _xs: _ys:
+              null;
+          };
+        };
+      }).components.relation
+      true
+  );
   logismosExports = builtins.attrNames logismos;
   computationExports = builtins.attrNames computation;
   relationExports = builtins.attrNames relation;
@@ -774,8 +850,30 @@ let
     selectedSumLazy = selectedSum.branch == "success";
     sumMismatchOpaque = mismatchedSum.opaqueFailure == poison.opaqueFailure;
     dependentProduct = dependentRelation.branch == "success";
+    dependentProductOrder =
+      dependentOrder.finalState.order == [
+        "dependent-left"
+        "dependent-right"
+        "dependent-first"
+        "dependent-second"
+      ];
+    dependentProductFailureLazy = dependentFailure.branch == "failure";
+    dependentLeftObservationFailureLazy = dependentLeftObservationFailure.branch == "failure";
     extensional = extensionalRelation.branch == "success";
+    extensionalWitnessOnce =
+      extensionalOrder.branch == "success"
+      &&
+        extensionalOrder.finalState.order == [
+          "extensional-witness"
+          "extensional-left"
+          "extensional-right"
+          "extensional-codomain"
+          "extensional-relation"
+        ];
+    extensionalLeftApplicationFailureLazy = extensionalLeftFailure.branch == "failure";
     pointwise = pointwiseRelation.branch == "success";
+    pointwiseComplete = pointwiseCompleteFailure.branch == "failure";
+    pointwiseFirstFailureLazy = pointwiseFirstFailureLazy.branch == "failure";
     budgetZero =
       budget.zero == {
         depth = 0;
@@ -857,6 +955,8 @@ let
       ];
     privateStackNotExported = !(logismos ? stack);
     budgetExportSet = budgetExports == [ "make" ];
+    malformedRelationFactoryRejected = !malformedRelationFactory.success;
+    malformedRelationImplementationRejected = !malformedRelationImplementation.success;
     closedInstructions =
       contains ''kind = "bind"'' computationSource
       && contains ''else if instruction.kind == "bind"'' computationSource

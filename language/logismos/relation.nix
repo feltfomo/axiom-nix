@@ -33,20 +33,42 @@ in
     else
       fail mismatch;
 
-  # the first values choose the relation for the dependent fields
+  # retained witnesses choose the dependent relation after their comparison succeeds
   dependentProduct =
-    firstRelation: secondRelation: left: right:
-    bind (firstRelation left.first right.first) (
-      _firstEvidence: secondRelation left.first right.first left.second right.second
+    {
+      leftFirst,
+      rightFirst,
+      firstRelation,
+      secondRelation,
+    }:
+    bind leftFirst (
+      leftWitness:
+      bind rightFirst (
+        rightWitness:
+        bind (firstRelation leftWitness rightWitness) (
+          _firstEvidence: secondRelation leftWitness rightWitness
+        )
+      )
     );
 
+  # one witness supplies both applications and the dependent codomain
   extensional =
     {
-      fresh,
+      witness,
       apply,
+      codomain,
       relation,
     }:
-    left: right: relation (apply left fresh) (apply right fresh);
+    left: right:
+    bind witness (
+      retained:
+      bind (apply left retained) (
+        leftBody:
+        bind (apply right retained) (
+          rightBody: bind (codomain retained) (bodyType: relation retained bodyType leftBody rightBody)
+        )
+      )
+    );
 
   pointwise =
     itemRelation: mismatch: left: right:

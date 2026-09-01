@@ -13,7 +13,12 @@
 }:
 let
   sem = evaluation.representation;
-  inherit (logismos) computation;
+  inherit (logismos) computation relation;
+  liftRelation =
+    leftProgram: rightProgram: selected:
+    computation.bind (computation.product leftProgram rightProgram) (
+      values: selected (builtins.elemAt values 0) (builtins.elemAt values 1)
+    );
   inherit (budget) initial;
   inherit (budget) merge;
   semanticFailure =
@@ -30,8 +35,8 @@ let
     );
   semanticFailureProgram = depth: checked: computation.fail (semanticFailure depth checked);
   mismatchProgram = depth: computation.fail (mismatch depth);
-  neutralCompareProgramUnobserved =
-    limits: ctx: type: left: right:
+  typedNeutralRelationUnobserved =
+    limits: ctx: left: right:
     let
       leftChecked = representation.neutralShape left;
       rightChecked = representation.neutralShape right;
@@ -132,11 +137,205 @@ let
           }
         )
     );
-  neutralCompareProgram =
-    limits: ctx: type: left: right:
+  typedNeutralRelation =
+    limits: ctx: left: right:
     observer.emit { operation = "kernel.conversion.neutral"; } (
-      neutralCompareProgramUnobserved limits ctx type left right
+      typedNeutralRelationUnobserved limits ctx left right
     );
+  typeHandlers = {
+    "empty-type" =
+      _limits: _ctx: _left: _right:
+      computation.pure null;
+    "identity-type" =
+      limits: ctx: left: right:
+      relation.dependentProduct {
+        leftFirst = semantic.demand "conversion" limits ctx.depth left.carrier;
+        rightFirst = semantic.demand "conversion" limits ctx.depth right.carrier;
+        firstRelation = compareTypeProgram limits ctx;
+        secondRelation =
+          leftCarrier: _rightCarrier:
+          relation.pointwise (
+            leftCell: rightCell:
+            liftRelation (semantic.demand "conversion" limits ctx.depth leftCell) (semantic.demand "conversion"
+              limits
+              ctx.depth
+              rightCell
+            ) (compareValueProgram limits ctx leftCarrier)
+          ) (mismatch ctx.depth) [ left.left left.right ] [ right.left right.right ];
+      };
+    neutral =
+      limits: ctx: left: right:
+      typedNeutralRelation limits ctx left right;
+    pi = dependentTypeRelation;
+    sigma = dependentTypeRelation;
+    "sum-type" =
+      limits: ctx: left: right:
+      relation.product
+        (
+          leftCell: rightCell:
+          liftRelation (semantic.demand "conversion" limits ctx.depth leftCell) (semantic.demand "conversion"
+            limits
+            ctx.depth
+            rightCell
+          ) (compareTypeProgram limits ctx)
+        )
+        (
+          leftCell: rightCell:
+          liftRelation (semantic.demand "conversion" limits ctx.depth leftCell) (semantic.demand "conversion"
+            limits
+            ctx.depth
+            rightCell
+          ) (compareTypeProgram limits ctx)
+        )
+        [ left.left left.right ]
+        [ right.left right.right ];
+    "unit-type" =
+      _limits: _ctx: _left: _right:
+      computation.pure null;
+    universe =
+      _limits: ctx: left: right:
+      if core.levels.equal left.level right.level then
+        computation.pure null
+      else
+        mismatchProgram ctx.depth;
+  };
+  valueHandlers = {
+    "empty-type" =
+      limits: ctx: _type: left: right:
+      if left.kind == "neutral" && right.kind == "neutral" then
+        typedNeutralRelation limits ctx left right
+      else
+        mismatchProgram ctx.depth;
+    "identity-type" =
+      limits: ctx: type: left: right:
+      if left.kind == "refl" && right.kind == "refl" then
+        computation.bind (semantic.demand "conversion" limits ctx.depth type.carrier) (
+          carrier:
+          liftRelation (semantic.demand "conversion" limits ctx.depth left.value) (semantic.demand
+            "conversion"
+            limits
+            ctx.depth
+            right.value
+          ) (compareValueProgram limits ctx carrier)
+        )
+      else if left.kind == "neutral" && right.kind == "neutral" then
+        typedNeutralRelation limits ctx left right
+      else
+        mismatchProgram ctx.depth;
+    pi =
+      limits: ctx: type: left: right:
+      relation.extensional {
+        witness = computation.bind (semantic.demand "conversion" limits ctx.depth type.domain) (
+          domain:
+          computation.map (extended: {
+            inherit extended;
+            argument = sem.valueCell (sem.neutral ctx.depth);
+          }) (context.extendComputed "conversion" limits ctx domain)
+        );
+        apply = value: retained: semantic.apply "conversion" limits (ctx.depth + 1) value retained.argument;
+        codomain =
+          retained: semantic.apply "conversion" limits (ctx.depth + 1) type.codomain retained.argument;
+        relation = retained: codomain: compareValueProgram limits retained.extended codomain;
+      } left right;
+    sigma =
+      limits: ctx: type: left: right:
+      relation.dependentProduct {
+        leftFirst = semantic.project "conversion" limits ctx.depth "first" left;
+        rightFirst = semantic.project "conversion" limits ctx.depth "first" right;
+        firstRelation =
+          leftFirst: rightFirst:
+          computation.bind (semantic.demand "conversion" limits ctx.depth type.domain) (
+            domain: compareValueProgram limits ctx domain leftFirst rightFirst
+          );
+        secondRelation =
+          leftFirst: _rightFirst:
+          computation.bind
+            (semantic.apply "conversion" limits ctx.depth type.codomain (sem.valueCell leftFirst))
+            (
+              codomain:
+              liftRelation (semantic.project "conversion" limits ctx.depth "second" left) (semantic.project
+                "conversion"
+                limits
+                ctx.depth
+                "second"
+                right
+              ) (compareValueProgram limits ctx codomain)
+            );
+      };
+    "sum-type" =
+      limits: ctx: type: left: right:
+      if left.kind == "neutral" && right.kind == "neutral" then
+        typedNeutralRelation limits ctx left right
+      else
+        relation.sum {
+          classify =
+            value:
+            if value.kind == "left-injection" then
+              "left"
+            else if value.kind == "right-injection" then
+              "right"
+            else
+              "mismatch";
+          leftRelation =
+            leftCell: rightCell:
+            computation.bind (semantic.demand "conversion" limits ctx.depth type.left) (
+              side:
+              liftRelation (semantic.demand "conversion" limits ctx.depth leftCell) (semantic.demand "conversion"
+                limits
+                ctx.depth
+                rightCell
+              ) (compareValueProgram limits ctx side)
+            );
+          rightRelation =
+            leftCell: rightCell:
+            computation.bind (semantic.demand "conversion" limits ctx.depth type.right) (
+              side:
+              liftRelation (semantic.demand "conversion" limits ctx.depth leftCell) (semantic.demand "conversion"
+                limits
+                ctx.depth
+                rightCell
+              ) (compareValueProgram limits ctx side)
+            );
+          mismatch = mismatch ctx.depth;
+        } left right;
+    "unit-type" =
+      _limits: _ctx: _type: _left: _right:
+      computation.pure null;
+    universe =
+      limits: ctx: _type: left: right:
+      compareTypeProgram limits ctx left right;
+  };
+  handlerKeys = {
+    type = builtins.attrNames typeHandlers;
+    value = builtins.attrNames valueHandlers;
+    producerType = evaluation.representation.schema.conversionRoles.typeKinds;
+    producerValue = evaluation.representation.schema.conversionRoles.valueKinds;
+  };
+  handlersClosed =
+    handlerKeys.type == handlerKeys.producerType && handlerKeys.value == handlerKeys.producerValue;
+  dependentTypeRelation =
+    limits: ctx: left: right:
+    relation.dependentProduct {
+      leftFirst = semantic.demand "conversion" limits ctx.depth left.domain;
+      rightFirst = semantic.demand "conversion" limits ctx.depth right.domain;
+      firstRelation = compareTypeProgram limits ctx;
+      secondRelation =
+        leftDomain: _rightDomain:
+        computation.bind (context.extendComputed "conversion" limits ctx leftDomain) (
+          extended:
+          let
+            fresh = sem.valueCell (sem.neutral ctx.depth);
+          in
+          liftRelation (semantic.apply "conversion" limits (ctx.depth + 1) left.codomain fresh) (
+            semantic.apply
+            "conversion"
+            limits
+            (ctx.depth + 1)
+            right.codomain
+            fresh
+          ) (compareTypeProgram limits extended)
+        );
+    };
   compareTypeProgram =
     limits: ctx: left: right:
     computation.bind
@@ -146,88 +345,21 @@ let
         let
           lc = representation.semanticShape left;
           rc = representation.semanticShape right;
-          dependent = computation.bind (semantic.demand "conversion" limits ctx.depth left.domain) (
-            leftDomain:
-            computation.bind (semantic.demand "conversion" limits ctx.depth right.domain) (
-              rightDomain:
-              computation.bind (compareTypeProgram limits ctx leftDomain rightDomain) (
-                _domains:
-                computation.bind (context.extendComputed "conversion" limits ctx leftDomain) (
-                  extended:
-                  let
-                    fresh = sem.valueCell (sem.neutral ctx.depth);
-                  in
-                  computation.bind (semantic.apply "conversion" limits (ctx.depth + 1) left.codomain fresh) (
-                    leftCodomain:
-                    computation.bind (semantic.apply "conversion" limits (ctx.depth + 1) right.codomain fresh) (
-                      rightCodomain: compareTypeProgram limits extended leftCodomain rightCodomain
-                    )
-                  )
-                )
-              )
-            )
-          );
         in
         if !lc.ok then
           semanticFailureProgram ctx.depth lc
         else if !rc.ok then
           semanticFailureProgram ctx.depth rc
+        else if !handlersClosed then
+          computation.fail (result.internal "conversion" ctx.depth result.codes.impossibleState)
+        else if
+          !(builtins.hasAttr left.kind typeHandlers) || !(builtins.hasAttr right.kind typeHandlers)
+        then
+          computation.fail (result.internal "conversion" ctx.depth result.codes.expectedType)
         else if left.kind != right.kind then
           mismatchProgram ctx.depth
-        else if left.kind == "universe" then
-          if core.levels.equal left.level right.level then
-            computation.pure null
-          else
-            mismatchProgram ctx.depth
-        else if left.kind == "unit-type" || left.kind == "empty-type" then
-          computation.pure null
-        else if left.kind == "pi" || left.kind == "sigma" then
-          dependent
-        else if left.kind == "sum-type" then
-          computation.bind (semantic.demand "conversion" limits ctx.depth left.left) (
-            leftLeft:
-            computation.bind (semantic.demand "conversion" limits ctx.depth right.left) (
-              rightLeft:
-              computation.bind (compareTypeProgram limits ctx leftLeft rightLeft) (
-                _left:
-                computation.bind (semantic.demand "conversion" limits ctx.depth left.right) (
-                  leftRight:
-                  computation.bind (semantic.demand "conversion" limits ctx.depth right.right) (
-                    rightRight: compareTypeProgram limits ctx leftRight rightRight
-                  )
-                )
-              )
-            )
-          )
-        else if left.kind == "identity-type" then
-          computation.bind (semantic.demand "conversion" limits ctx.depth left.carrier) (
-            leftCarrier:
-            computation.bind (semantic.demand "conversion" limits ctx.depth right.carrier) (
-              rightCarrier:
-              computation.bind (compareTypeProgram limits ctx leftCarrier rightCarrier) (
-                _carrier:
-                computation.bind (semantic.demand "conversion" limits ctx.depth left.left) (
-                  leftSource:
-                  computation.bind (semantic.demand "conversion" limits ctx.depth right.left) (
-                    rightSource:
-                    computation.bind (compareValueProgram limits ctx leftCarrier leftSource rightSource) (
-                      _source:
-                      computation.bind (semantic.demand "conversion" limits ctx.depth left.right) (
-                        leftTarget:
-                        computation.bind (semantic.demand "conversion" limits ctx.depth right.right) (
-                          rightTarget: compareValueProgram limits ctx leftCarrier leftTarget rightTarget
-                        )
-                      )
-                    )
-                  )
-                )
-              )
-            )
-          )
-        else if left.kind == "neutral" then
-          neutralCompareProgram limits ctx (sem.universe core.levels.zero) left right
         else
-          computation.fail (result.internal "conversion" ctx.depth result.codes.expectedType)
+          typeHandlers.${left.kind} limits ctx left right
       );
   compareValueProgram =
     limits: ctx: type: left: right:
@@ -246,98 +378,12 @@ let
           semanticFailureProgram ctx.depth lc
         else if !rc.ok then
           semanticFailureProgram ctx.depth rc
-        else if type.kind == "universe" then
-          compareTypeProgram limits ctx left right
-        else if type.kind == "unit-type" then
-          computation.pure null
-        else if type.kind == "pi" then
-          computation.bind (semantic.demand "conversion" limits ctx.depth type.domain) (
-            domain:
-            computation.bind (context.extendComputed "conversion" limits ctx domain) (
-              extended:
-              let
-                fresh = sem.valueCell (sem.neutral ctx.depth);
-              in
-              computation.bind (semantic.apply "conversion" limits (ctx.depth + 1) left fresh) (
-                leftBody:
-                computation.bind (semantic.apply "conversion" limits (ctx.depth + 1) right fresh) (
-                  rightBody:
-                  computation.bind (semantic.apply "conversion" limits (ctx.depth + 1) type.codomain fresh) (
-                    codomain: compareValueProgram limits extended codomain leftBody rightBody
-                  )
-                )
-              )
-            )
-          )
-        else if type.kind == "sigma" then
-          computation.bind (semantic.project "conversion" limits ctx.depth "first" left) (
-            leftFirst:
-            computation.bind (semantic.project "conversion" limits ctx.depth "first" right) (
-              rightFirst:
-              computation.bind (semantic.demand "conversion" limits ctx.depth type.domain) (
-                domain:
-                computation.bind (compareValueProgram limits ctx domain leftFirst rightFirst) (
-                  _first:
-                  computation.bind
-                    (semantic.apply "conversion" limits ctx.depth type.codomain (sem.valueCell leftFirst))
-                    (
-                      codomain:
-                      computation.bind (semantic.project "conversion" limits ctx.depth "second" left) (
-                        leftSecond:
-                        computation.bind (semantic.project "conversion" limits ctx.depth "second" right) (
-                          rightSecond: compareValueProgram limits ctx codomain leftSecond rightSecond
-                        )
-                      )
-                    )
-                )
-              )
-            )
-          )
-        else if type.kind == "sum-type" then
-          if left.kind != right.kind then
-            mismatchProgram ctx.depth
-          else if left.kind == "left-injection" || left.kind == "right-injection" then
-            computation.bind
-              (semantic.demand "conversion" limits ctx.depth
-                type.${if left.kind == "left-injection" then "left" else "right"}
-              )
-              (
-                side:
-                computation.bind (semantic.demand "conversion" limits ctx.depth left.value) (
-                  leftValue:
-                  computation.bind (semantic.demand "conversion" limits ctx.depth right.value) (
-                    rightValue: compareValueProgram limits ctx side leftValue rightValue
-                  )
-                )
-              )
-          else if left.kind == "neutral" then
-            neutralCompareProgram limits ctx type left right
-          else
-            mismatchProgram ctx.depth
-        else if type.kind == "empty-type" then
-          if left.kind == "neutral" && right.kind == "neutral" then
-            neutralCompareProgram limits ctx type left right
-          else
-            mismatchProgram ctx.depth
-        else if type.kind == "identity-type" then
-          if left.kind == "refl" && right.kind == "refl" then
-            computation.bind (semantic.demand "conversion" limits ctx.depth type.carrier) (
-              carrier:
-              computation.bind (semantic.demand "conversion" limits ctx.depth left.value) (
-                leftWitness:
-                computation.bind (semantic.demand "conversion" limits ctx.depth right.value) (
-                  rightWitness: compareValueProgram limits ctx carrier leftWitness rightWitness
-                )
-              )
-            )
-          else if left.kind == "neutral" && right.kind == "neutral" then
-            neutralCompareProgram limits ctx type left right
-          else
-            mismatchProgram ctx.depth
-        else if left.kind == "neutral" && right.kind == "neutral" then
-          neutralCompareProgram limits ctx type left right
+        else if !handlersClosed then
+          computation.fail (result.internal "conversion" ctx.depth result.codes.impossibleState)
+        else if !(builtins.hasAttr type.kind valueHandlers) then
+          computation.fail (result.internal "conversion" ctx.depth result.codes.expectedType)
         else
-          mismatchProgram ctx.depth
+          valueHandlers.${type.kind} limits ctx type left right
       );
   materializeProgram =
     state: program:
@@ -499,5 +545,6 @@ in
     compareValueProgram
     compareTypesAt
     compareTermsAt
+    handlerKeys
     ;
 }

@@ -10,6 +10,8 @@ let
   };
   r = core.representation;
   sem = evaluation.representation;
+  privateGraph = (import ./observed-graph.nix).silent { };
+  conversionHandlerKeys = privateGraph.kernel.components.conversion.handlerKeys;
   checked =
     terms:
     kernel.checkContext {
@@ -111,6 +113,68 @@ let
     expected = staleType;
   };
   emptyContext = (kernel.checkContext { entries = [ ]; }).context;
+  invalidConversionType = sem.unit // {
+    kind = "unit";
+  };
+  invalidConversionTypeResult = kernel.convertTerms {
+    contextValue = emptyContext;
+    type = invalidConversionType;
+    left = sem.unit;
+    right = sem.unit;
+  };
+  dependentPiSyntax = r.pi r.unitType (r.identityType r.unitType (r.variable 0) (r.variable 0));
+  dependentPiType = kernel.infer {
+    contextValue = emptyContext;
+    envelope = r.envelope 0 dependentPiSyntax [ ];
+  };
+  dependentPiLeft = kernel.check {
+    contextValue = emptyContext;
+    envelope = r.envelope 0 (r.lambda (r.refl (r.variable 0))) [ ];
+    expected = dependentPiType.value;
+  };
+  dependentPiRight = kernel.check {
+    contextValue = emptyContext;
+    envelope = r.envelope 0 (r.lambda (r.refl (r.variable 0))) [ ];
+    expected = dependentPiType.value;
+  };
+  dependentPiConversion = kernel.convertTerms {
+    contextValue = emptyContext;
+    type = dependentPiType.value;
+    left = dependentPiLeft.value;
+    right = dependentPiRight.value;
+  };
+  pointwiseIdentityLeft = sem.identityType (sem.valueCell (
+    sem.universe core.levels.zero
+  )) (sem.valueCell sem.unitType) (sem.valueCell sem.unitType);
+  pointwiseIdentityRight = sem.identityType (sem.valueCell (
+    sem.universe core.levels.zero
+  )) (sem.valueCell sem.unitType) (sem.valueCell sem.emptyType);
+  pointwiseIdentityResult = kernel.convertTypes {
+    contextValue = emptyContext;
+    left = pointwiseIdentityLeft;
+    right = pointwiseIdentityRight;
+  };
+  dependentSigmaType = sem.sigma (sem.valueCell (sem.universe core.levels.zero)) (
+    sem.closure (sem.initialEnvironment 0) r.unitType
+  );
+  dependentSigmaFailureAttempt = builtins.tryEval (
+    kernel.convertTerms {
+      contextValue = emptyContext;
+      type = dependentSigmaType;
+      left = sem.pair (sem.valueCell sem.unitType) (builtins.throw "left second projection forced");
+      right = sem.pair (sem.valueCell sem.emptyType) (builtins.throw "right second projection forced");
+    }
+  );
+  failedLeftApplicationAttempt = builtins.tryEval (
+    kernel.convertTerms {
+      contextValue = emptyContext;
+      type = sem.pi (sem.valueCell sem.unitType) (
+        builtins.throw "codomain forced after failed left application"
+      );
+      left = sem.closure (sem.initialEnvironment 0) (r.variable 99);
+      right = sem.closure (sem.initialEnvironment 0) (builtins.throw "right application forced");
+    }
+  );
   checkingExact = kernel.infer {
     contextValue = emptyContext;
     envelope = r.envelope 0 r.unitType [ ];
@@ -481,6 +545,12 @@ let
     type = sem.universe core.levels.zero;
     inherit (unitElimination) value;
   };
+  typedNeutralReplayConversion = kernel.convertTerms {
+    contextValue = unitContext;
+    type = sem.universe core.levels.zero;
+    left = unitElimination.value;
+    right = unitElimination.value;
+  };
   longSpineLength = 64;
   longPiSyntax = builtins.foldl' (body: _index: r.pi r.unitType body) r.unitType (
     builtins.genList (index: index) longSpineLength
@@ -627,6 +697,10 @@ let
     value: !value.ok && value.kind == "internal-failure" && value.code == "AXIOM-KERNEL-011"
   ) malformedLimitCases;
   contains = needle: text: builtins.replaceStrings [ needle ] [ "" ] text != text;
+  conversionSource = builtins.readFile ../../language/kernel/conversion.nix;
+  conversionSections = builtins.split "\n  oracle =\n" conversionSource;
+  optimizedConversionSource = builtins.elemAt conversionSections 0;
+  oracleConversionSource = builtins.elemAt conversionSections 2;
   structuralSources = map builtins.readFile [
     ../../language/boundary/deep.nix
     ../../language/boundary/observe.nix
@@ -639,13 +713,11 @@ let
     ../../language/kernel/readback.nix
     ../../language/kernel/representation.nix
   ];
-  conversionSource = builtins.readFile ../../language/kernel/conversion.nix;
   readbackSource = builtins.readFile ../../language/kernel/readback.nix;
   transitionSource = builtins.readFile ../../language/kernel/neutral-transition.nix;
   semanticSource = builtins.readFile ../../language/kernel/semantic.nix;
   budgetSource = builtins.readFile ../../language/kernel/budget.nix;
   representationSource = builtins.readFile ../../language/kernel/representation.nix;
-  schemaSource = builtins.readFile ../../language/evaluation/schema.nix;
   checkingSource = builtins.readFile ../../language/kernel/checking.nix;
   transitionalOwnersPresent = builtins.all builtins.pathExists [
     ../../language/kernel/budget.nix
@@ -658,13 +730,11 @@ let
       "makePlan"
       ".plan"
       "peerPlan"
-      "handlersClosed"
       "neutralElimination"
     ];
   structuralReconciliation =
     builtins.all (text: !(contains "builtins.genericClosure" text)) structuralSources
     && !(forbiddenPlanText transitionSource)
-    && !(forbiddenPlanText conversionSource)
     && !(forbiddenPlanText readbackSource)
     && contains "logismos.budget.make" budgetSource
     && contains "computation.bind" semanticSource
@@ -681,8 +751,6 @@ let
     && !(contains "semantic.runStateful" transitionSource)
     && !(contains "kernelState" transitionSource)
     && !(contains "args //" transitionSource)
-    && contains "compareTypeProgram" conversionSource
-    && contains "compareValueProgram" conversionSource
     && contains "inferProgram" checkingSource
     && contains "checkProgram" checkingSource
     && contains "formProgram" checkingSource
@@ -692,28 +760,19 @@ let
     && !(contains "formAt =" checkingSource)
     && !(contains "inferAt =" checkingSource)
     && !(contains "checkAt =" checkingSource)
-    && !(contains "runProgram =" conversionSource)
-    && !(contains "neutralCompare =" conversionSource)
-    && !(contains "compareType =" conversionSource)
-    && !(contains "compareValue =" conversionSource)
-    && contains "neutralTransition.replay" conversionSource
     && contains "neutralTransition.replay" readbackSource
     && contains "reflect =" readbackSource
     && contains "reify = quoteValue" readbackSource
     && contains "sem.extendNeutral d.value d.item" transitionSource
-    && !(contains "extendNeutral" conversionSource)
     && !(contains "extendNeutral" readbackSource)
     && !(contains "boundedNewestFirst" representationSource)
     && !(contains "internal/worklist" representationSource)
     && !(contains "builtins.tail" transitionSource)
     && !(contains "builtins.tail" readbackSource)
-    && !(contains "builtins.tail" conversionSource)
     && !(contains "  flow," checkingSource)
     && !(contains "semanticOps" checkingSource)
     && !(contains "resources." checkingSource)
-    && !(contains "flow.andThen" conversionSource)
     && !(contains "flow.andThen" readbackSource)
-    && contains "conversionRoles =" schemaSource
     && transitionalOwnersPresent;
   resourceFixture =
     {
@@ -940,6 +999,27 @@ let
     builtins.all (case: case.pass) resourceEquivalenceMatrix && hostileSpineRejected;
   evidence = {
     privateGeneration = kernel.generation == "axiom-kernel-1";
+    conversionHandlerKeysExact =
+      conversionHandlerKeys.type == conversionHandlerKeys.producerType
+      && conversionHandlerKeys.value == conversionHandlerKeys.producerValue
+      && conversionHandlerKeys.type == evaluation.representation.schema.conversionRoles.typeKinds
+      && conversionHandlerKeys.value == evaluation.representation.schema.conversionRoles.valueKinds;
+    optimizedReadbackBoundary =
+      builtins.length conversionSections == 3
+      && !(contains "readback." optimizedConversionSource)
+      && contains "readback.quoteAt" oracleConversionSource;
+    invalidConversionTypeRejected =
+      !invalidConversionTypeResult.ok
+      && invalidConversionTypeResult.kind == "internal-failure"
+      && invalidConversionTypeResult.code == "AXIOM-KERNEL-006";
+    binderSensitivePiIdentityCodomain =
+      dependentPiType.ok && dependentPiLeft.ok && dependentPiRight.ok && dependentPiConversion.ok;
+    pointwiseIdentityEndpointsDistinct = !pointwiseIdentityResult.ok;
+    dependentSigmaFirstFailureLazy =
+      dependentSigmaFailureAttempt.success && !dependentSigmaFailureAttempt.value.ok;
+    failedLeftApplicationLazy =
+      failedLeftApplicationAttempt.success && !failedLeftApplicationAttempt.value.ok;
+    neutralSigmaProjection = sigmaConversion.ok && sigmaOracle.ok;
     malformedLimits = malformedLimitsRejected;
     hostileSpineValidation = hostileSpineRejected;
     structuralMechanisms = structuralReconciliation;
@@ -1013,6 +1093,7 @@ let
     generatedConversionOracleAgreement = generatedAgreement;
     rejectedEtaControls = sumEtaControl && emptyEtaControl && identityEtaControl;
     typedEliminatorReplay = unitElimination.ok && unitEliminationReadback.ok;
+    typedNeutralConversionReplay = typedNeutralReplayConversion.ok;
     longSpineReplay =
       longSpineContextResult.ok
       && longSpineInference.ok

@@ -1,69 +1,153 @@
-# generic runner over the mutation registry. every registered entry is executed,
-# so an entry that no longer has a working factory or killing predicate fails the
-# harness instead of sitting unreferenced.
 let
   graphs = import ../observed-graph.nix;
   registry = import ./registry.nix;
   control = graphs.silent { };
   r = control.core.public.representation;
-  sem = control.evaluation.public.representation;
-  contextOf = kernel: kernel.checkContext { entries = [ (r.envelope 0 r.unitType [ ]) ]; };
-  # the comparison charge law is specified here rather than read back from the
-  # registry, so mutation metadata cannot define its own passing condition
-  chargeCase =
-    kernel: limits:
-    kernel.convertTerms {
-      contextValue = (contextOf kernel).context;
-      type = sem.unitType;
-      left = sem.unit;
-      right = sem.unit;
-      inherit limits;
-    };
-  # killing tests and installation probes are independent executable cases keyed
-  # by the names a registry entry carries, so an entry naming something unknown
-  # fails the harness instead of borrowing the case written for another owner
-  killingCases = {
-    "language.kernel.test conversionResourceExact" = {
-      run =
-        kernel:
-        chargeCase kernel {
+  contextOf = graph: entries: graph.kernel.public.checkContext { inherit entries; };
+  summarize =
+    result:
+    if result.ok then
+      {
+        ok = true;
+        inherit (result) resources;
+      }
+    else
+      {
+        ok = false;
+        kind = result.kind or null;
+        code = result.code or null;
+        budget = result.budget or null;
+        limit = result.limit or null;
+        consumed = result.consumed or null;
+      };
+  chargeObservation =
+    graph:
+    let
+      sem = graph.evaluation.public.representation;
+      result = graph.kernel.public.convertTerms {
+        contextValue = (contextOf graph [ (r.envelope 0 r.unitType [ ]) ]).context;
+        type = sem.unitType;
+        left = sem.unit;
+        right = sem.unit;
+        limits = {
           conversion = 1;
           comparison = 1;
         };
+      };
+    in
+    {
+      inherit (result) ok;
+      conversion = result.resources.conversion or null;
+      comparison = result.resources.comparison or null;
+    };
+  dependentSigmaObservation =
+    graph:
+    let
+      sem = graph.evaluation.public.representation;
+      contextValue = (contextOf graph [ (r.envelope 0 r.unitType [ ]) ]).context;
+      dependentCodomain = r.unitElimination (r.variable 0) (r.universe r.levelZero) r.unitType;
+      type = sem.sigma (sem.valueCell sem.unitType) (
+        sem.closure (sem.initialEnvironment 0) dependentCodomain
+      );
+      result = graph.kernel.public.convertTerms {
+        inherit contextValue type;
+        left = sem.pair (sem.valueCell sem.unit) (sem.valueCell sem.unit);
+        right = sem.pair (sem.valueCell (sem.neutral 0)) (sem.valueCell sem.unit);
+      };
+    in
+    summarize result;
+  extensionalPiObservation =
+    graph:
+    let
+      sem = graph.evaluation.public.representation;
+      type = sem.pi (sem.valueCell sem.unitType) (sem.closure (sem.initialEnvironment 0) r.unitType);
+      function = sem.closure (sem.initialEnvironment 0) r.unit;
+      result = graph.kernel.public.convertTerms {
+        contextValue = (contextOf graph [ ]).context;
+        inherit type;
+        left = function;
+        right = function;
+        limits = {
+          conversion = 2;
+          comparison = 2;
+          context = 1;
+          readback = 4;
+          depth = 1;
+        };
+      };
+    in
+    summarize result;
+  identityPointwiseObservation =
+    graph:
+    let
+      sem = graph.evaluation.public.representation;
+      carrier = sem.valueCell (sem.universe graph.core.public.levels.zero);
+      source = sem.valueCell sem.unitType;
+      result = graph.kernel.public.convertTypes {
+        contextValue = (contextOf graph [ ]).context;
+        left = sem.identityType carrier source (sem.valueCell sem.unitType);
+        right = sem.identityType carrier source (sem.valueCell sem.emptyType);
+      };
+    in
+    summarize result;
+  cases = {
+    "language.kernel.test conversionResourceExact" = {
+      observe = chargeObservation;
       predicate =
-        result: result.ok && result.resources.conversion == 1 && result.resources.comparison == 1;
+        observation:
+        observation == {
+          ok = true;
+          conversion = 1;
+          comparison = 1;
+        };
+    };
+    "language.kernel.test dependentSigmaCodomainWitness" = {
+      observe = dependentSigmaObservation;
+      predicate = observation: observation.ok;
+    };
+    "language.kernel.test extensionalPiWitnessResourceExact" = {
+      observe = extensionalPiObservation;
+      predicate = observation: observation.ok;
+    };
+    "language.kernel.test identityPointwiseTargetComplete" = {
+      observe = identityPointwiseObservation;
+      predicate = observation: !observation.ok;
     };
   };
-  # a probe is behavioral, so it separates a genuinely installed owner from a
-  # construction that merely reports a different identity string
-  probeCases = {
-    "kernel-budget-comparison-charge-canary" =
-      kernel:
-      chargeCase kernel {
-        conversion = 1;
-        comparison = 0;
-      };
+  probes = {
+    "kernel-budget-comparison-charge-canary" = chargeObservation;
+    "kernel-conversion-dependent-sigma-witness-canary" = dependentSigmaObservation;
+    "kernel-conversion-extensional-pi-resource-canary" = extensionalPiObservation;
+    "kernel-conversion-identity-pointwise-canary" = identityPointwiseObservation;
   };
   execute =
     entry:
     let
       selected = registry.byName.${entry.name};
-      mutated = graphs.silent { budgetFactory = selected.factory; };
-      mutatedKernel = mutated.kernel.public;
-      productionKernel = control.kernel.public;
+      mutated = graphs.silent (
+        if selected.seam == "budget" then
+          { budgetFactory = selected.factory; }
+        else
+          { relationFactory = selected.factory; }
+      );
       selectedFactory = selected.factory.identity == entry.name;
-      installed = mutated.kernel.wiring.budget == entry.name;
-      controlProduction = control.kernel.wiring.budget == "production";
-      probeCase = probeCases.${entry.installationProbe} or null;
-      killingCase = killingCases.${entry.killingTest} or null;
-      resolved = probeCase != null && killingCase != null;
-      probeControl = probeCase productionKernel;
-      probeMutated = probeCase mutatedKernel;
-      probeDistinguishes = resolved && (!probeControl.ok) && probeMutated.ok;
-      productionResult = killingCase.run productionKernel;
-      mutatedResult = killingCase.run mutatedKernel;
-      productionPasses = resolved && killingCase.predicate productionResult;
-      mutatedPasses = resolved && killingCase.predicate mutatedResult;
+      installed =
+        if selected.seam == "budget" then
+          mutated.kernel.wiring.budget == entry.name
+        else
+          mutated.logismos.wiring.relation == entry.name;
+      controlProduction =
+        control.kernel.wiring.budget == "production" && control.logismos.wiring.relation == "production";
+      probe = probes.${entry.installationProbe} or null;
+      killingCase = cases.${entry.killingTest} or null;
+      resolved = probe != null && killingCase != null;
+      controlProbe = if resolved then probe control else { };
+      mutatedProbe = if resolved then probe mutated else { };
+      probeDistinguishes = resolved && controlProbe != mutatedProbe;
+      productionObservation = if resolved then killingCase.observe control else { };
+      mutatedObservation = if resolved then killingCase.observe mutated else { };
+      productionPasses = resolved && killingCase.predicate productionObservation;
+      mutatedPasses = resolved && killingCase.predicate mutatedObservation;
       proven = selectedFactory && installed && controlProduction && probeDistinguishes;
       outcome =
         if !resolved then
@@ -98,9 +182,9 @@ let
           probeDistinguishes
           productionPasses
           mutatedPasses
+          productionObservation
           ;
-        observation =
-          if resolved then { inherit (mutatedResult.resources) conversion comparison; } else { };
+        observation = mutatedObservation;
       };
     };
   results = map execute registry.entries;
@@ -109,16 +193,15 @@ let
   malformedFactory = builtins.tryEval (
     builtins.seq
       (graphs.silent {
-        budgetFactory = {
+        relationFactory = {
           identity = "malformed";
         };
-      }).kernel.components.budget
+      }).logismos.components.relation
       true
   );
 in
 {
   inherit results;
-  # consumed by the host mutation mode, which is red when anything survives
   report = {
     inherit results outcomes;
     entries = builtins.length registry.entries;
@@ -131,8 +214,13 @@ in
   evidence = {
     mutationRegistryExecuted =
       registry.entries != [ ] && builtins.length results == builtins.length registry.entries;
-    # a named probe or killing test that does not resolve to an executable case
-    # is a harness failure rather than a silently reused case
+    mutationRegistryExact =
+      map (entry: entry.name) registry.entries == [
+        "kernel-budget-skip-comparison-charge"
+        "logismos-relation-dependent-witness"
+        "logismos-relation-extensional-witness"
+        "logismos-relation-pointwise-completeness"
+      ];
     mutationCasesResolved = builtins.all (result: result.observed.resolved) results;
     mutationInstallationProven = builtins.all (
       result:

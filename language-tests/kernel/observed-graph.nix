@@ -8,9 +8,16 @@ let
     {
       observer,
       budgetFactory ? null,
+      relationFactory ? null,
     }:
     let
-      logismos = import ../../language/logismos/construct.nix { inherit observer; };
+      logismosArguments = { inherit observer; };
+      logismos = import ../../language/logismos/construct.nix (
+        if relationFactory == null then
+          logismosArguments
+        else
+          logismosArguments // { inherit relationFactory; }
+      );
       core = import ../../language/core/construct.nix {
         inherit observer;
         logismos = logismos.public;
@@ -56,17 +63,19 @@ in
     {
       hook,
       budgetFactory ? null,
+      relationFactory ? null,
     }:
     graph {
-      inherit budgetFactory;
+      inherit budgetFactory relationFactory;
       observer = observation.observed hook;
     };
   silent =
     {
       budgetFactory ? null,
+      relationFactory ? null,
     }:
     graph {
-      inherit budgetFactory;
+      inherit budgetFactory relationFactory;
       observer = observation.silent;
     };
 }
