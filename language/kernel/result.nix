@@ -192,5 +192,6 @@ in
     impossibleState = "AXIOM-KERNEL-008";
     evaluation = "AXIOM-KERNEL-009";
     malformedSemantic = "AXIOM-KERNEL-010";
+    malformedLimits = "AXIOM-KERNEL-011";
   };
 }
