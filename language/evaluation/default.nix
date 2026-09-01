@@ -1,35 +1,10 @@
 { core }:
 let
-  logismos = import ../logismos;
-  representation = import ./representation.nix;
-  schema = import ./schema.nix;
-  result = import ./result.nix;
-  budget = import ./budget.nix { inherit result logismos; };
-  direct = import ./direct.nix {
-    inherit
-      core
-      representation
-      result
-      budget
-      logismos
-      ;
-  };
-  machine = import ./machine.nix {
-    inherit
-      core
-      representation
-      result
-      budget
-      logismos
-      ;
+  observation = import ../internal/operation-observer.nix;
+  constructed = import ./construct.nix {
+    inherit core;
+    observer = observation.silent;
+    logismos = import ../logismos;
   };
 in
-{
-  inherit
-    representation
-    schema
-    result
-    direct
-    machine
-    ;
-}
+constructed.public

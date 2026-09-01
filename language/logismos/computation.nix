@@ -1,4 +1,4 @@
-{ stack }:
+{ stack, observer }:
 let
   reverse = builtins.foldl' (values: value: [ value ] ++ values) [ ];
   last = values: builtins.elemAt values (builtins.length values - 1);
@@ -104,7 +104,9 @@ let
               ]
             else
               let
-                instruction = stack.top current.worklist;
+                instruction = observer.emit { operation = "logismos.computation.instruction"; } (
+                  stack.top current.worklist
+                );
                 remaining = stack.pop current.worklist;
                 advanced =
                   if instruction.kind == "reader" then

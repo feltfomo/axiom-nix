@@ -4,6 +4,7 @@
   schema,
   computation,
   traversal,
+  observer,
 }:
 let
   inherit (representation) limits;
@@ -57,7 +58,9 @@ let
         charged = state // {
           consumed = state.consumed + 1;
         };
-        outer = builtins.tryEval (builtins.typeOf frame.node);
+        outer = observer.emit { operation = "core.admission.node"; } (
+          builtins.tryEval (builtins.typeOf frame.node)
+        );
       in
       if !outer.success then
         failed charged (failure "host-failure" frame.path "node-outer")

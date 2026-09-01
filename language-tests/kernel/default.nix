@@ -1023,7 +1023,12 @@ let
       openNeutralReadback.ok
       && openNeutralReadback.value.root.kind == "variable"
       && openNeutralReadback.resources.depth == 1;
-  };
+  }
+  # the operation, observer, and mutation modules own their own evidence and
+  # arrive here as ordinary leaves
+  // (import ./operations.nix).evidence
+  // (import ./mutations/runner.nix).evidence
+  // (import ./baseline.nix).evidence;
   failed = builtins.attrNames (
     builtins.removeAttrs evidence (
       builtins.filter (name: evidence.${name}) (builtins.attrNames evidence)

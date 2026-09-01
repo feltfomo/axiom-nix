@@ -4,6 +4,7 @@
   result,
   budget,
   logismos,
+  observer,
 }:
 let
   lists = import ../internal/lists.nix;
@@ -255,10 +256,12 @@ let
     limits: state:
     # fuel refusal happens before control or frame state advances
     let
-      chargedStep = budget.machineStep {
-        inherit limits;
-        inherit (state) usage;
-      };
+      chargedStep = observer.emit { operation = "evaluation.machine.transition"; } (
+        budget.machineStep {
+          inherit limits;
+          inherit (state) usage;
+        }
+      );
     in
     if !chargedStep.ok then
       state

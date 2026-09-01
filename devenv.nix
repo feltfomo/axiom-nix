@@ -35,6 +35,14 @@ in
       exec = "devenv tasks run gate:all";
       description = "run the full gate used by CI";
     };
+    axiom-measure = {
+      exec = "devenv tasks run measure:operations";
+      description = "count executed language operations over the baseline ladder";
+    };
+    axiom-mutate = {
+      exec = "devenv tasks run measure:mutations";
+      description = "run the kernel mutation registry and fail when a mutation survives";
+    };
   };
 
   git-hooks.hooks = {
@@ -86,6 +94,14 @@ in
       exec = runNu "unit.nu";
       cwd = root;
     };
+    "measure:operations" = {
+      exec = runNu "measure.nu operations";
+      cwd = root;
+    };
+    "measure:mutations" = {
+      exec = runNu "measure.nu mutations";
+      cwd = root;
+    };
     "gate:all".after = [
       "check:all"
       "test:unit"
@@ -93,7 +109,7 @@ in
   };
 
   enterShell = ''
-    echo "axiom dev shell. Commands: axiom-fmt axiom-check axiom-test axiom-gate"
+    echo "axiom dev shell. Commands: axiom-fmt axiom-check axiom-test axiom-gate axiom-measure axiom-mutate"
   '';
 
   enterTest = ''

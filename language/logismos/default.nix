@@ -1,17 +1,4 @@
 let
-  stack = import ./stack.nix;
-  computation = import ./computation.nix { inherit stack; };
-  transition = import ./transition.nix { inherit stack; };
-  relation = import ./relation.nix { inherit computation; };
-  traversal = import ./traversal.nix { inherit computation transition stack; };
-  budget = import ./budget.nix { inherit computation; };
+  observation = import ../internal/operation-observer.nix;
 in
-{
-  inherit
-    computation
-    relation
-    transition
-    traversal
-    budget
-    ;
-}
+(import ./construct.nix { observer = observation.silent; }).public

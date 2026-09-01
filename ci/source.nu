@@ -42,13 +42,20 @@ export def stage-source [root: path] {
     error make {msg: $made.stderr}
   }
   let target = ($made.stdout | str trim)
-  for relative in (source-paths) {
-    let source = ($root | path join $relative)
-    if ($source | path exists) {
-      let destination = ($target | path join $relative)
-      mkdir ($destination | path dirname)
-      cp --recursive $source $destination
+  # the directory is allocated before anything is copied, so a copy failure has
+  # to remove it rather than leave a temporary tree behind
+  try {
+    for relative in (source-paths) {
+      let source = ($root | path join $relative)
+      if ($source | path exists) {
+        let destination = ($target | path join $relative)
+        mkdir ($destination | path dirname)
+        cp --recursive $source $destination
+      }
     }
+  } catch {|err|
+    rm --recursive --force $target
+    error make {msg: $"staging failed: ($err | get msg? | default 'copy error')"}
   }
   $target
 }

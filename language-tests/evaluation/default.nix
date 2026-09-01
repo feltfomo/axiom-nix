@@ -471,6 +471,9 @@ let
   directSource = builtins.readFile ../../language/evaluation/direct.nix;
   machineSource = builtins.readFile ../../language/evaluation/machine.nix;
   evaluationDefaultSource = builtins.readFile ../../language/evaluation/default.nix;
+  # the entry point delegates composition, so the evaluator imports are named by
+  # the construction file rather than by the entry point itself
+  evaluationConstructSource = builtins.readFile ../../language/evaluation/construct.nix;
   sharedSources = map builtins.readFile [
     ../../language/evaluation/budget.nix
     ../../language/evaluation/representation.nix
@@ -647,8 +650,9 @@ let
       && machine.authority.eliminatorKinds == eliminatorKinds
       && !(contains "machine.nix" directSource)
       && !(contains "direct.nix" machineSource)
-      && contains "./direct.nix" evaluationDefaultSource
-      && contains "./machine.nix" evaluationDefaultSource
+      && contains "./construct.nix" evaluationDefaultSource
+      && contains "./direct.nix" evaluationConstructSource
+      && contains "./machine.nix" evaluationConstructSource
       && contains "termHandlers" directSource
       && contains "eliminatorHandlers" directSource
       && contains "termHandlers" machineSource

@@ -1,4 +1,4 @@
-{ stack }:
+{ stack, observer }:
 let
   last = values: builtins.elemAt values (builtins.length values - 1);
   run =
@@ -12,7 +12,18 @@ let
       builtins.genericClosure {
         startSet = [ (initial // { key = 0; }) ];
         operator =
-          current: if terminal current then [ ] else [ ((step current) // { key = current.key + 1; }) ];
+          current:
+          if terminal current then
+            [ ]
+          else
+            [
+              (
+                (observer.emit { operation = "logismos.transition.step"; } (step current))
+                // {
+                  key = current.key + 1;
+                }
+              )
+            ];
       }
     );
 in

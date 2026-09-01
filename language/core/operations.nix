@@ -1,4 +1,8 @@
-{ representation, traversal }:
+{
+  representation,
+  traversal,
+  observer,
+}:
 let
   inherit (representation) generation limits;
   attrs = import ../internal/attrs.nix;
@@ -191,7 +195,7 @@ let
           metadata = ordered;
         };
 
-  admitted =
+  admittedUnobserved =
     envelope:
     if !exact [ "generation" "metadata" "root" "scope" ] envelope then
       rejected "boundary-mismatch" "envelope"
@@ -223,6 +227,9 @@ let
             nodes = checked.consumed;
             inherit (checked) paths variables;
           };
+
+  admitted =
+    envelope: observer.emit { operation = "core.admission.attempt"; } (admittedUnobserved envelope);
 
   finish =
     scope: metadata: rewritten:

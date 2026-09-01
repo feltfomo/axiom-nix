@@ -1,4 +1,5 @@
 let
+  schema = import ./schema.nix;
   generation = "axiom-evaluation-2";
   levelKey = toString;
   stamped = value: value // { inherit generation; };
@@ -173,6 +174,7 @@ in
 {
   inherit
     generation
+    schema
     generationMatches
     levelKey
     valueCell

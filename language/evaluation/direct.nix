@@ -4,6 +4,7 @@
   result,
   budget,
   logismos,
+  observer,
 }:
 let
   lists = import ../internal/lists.nix;
@@ -218,7 +219,7 @@ let
             bad subject;
       evaluate =
         env: depth: term:
-        computation.bind (charge depth) (
+        computation.bind (observer.emit { operation = "evaluation.direct.semantic-node"; } (charge depth)) (
           _unit:
           let
             thunk = child: representation.thunkCell env child;

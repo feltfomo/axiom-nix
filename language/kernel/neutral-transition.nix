@@ -6,6 +6,7 @@
   semantic,
   budget,
   logismos,
+  observer,
 }:
 let
   inherit (logismos) computation traversal;
@@ -370,7 +371,7 @@ let
           computation.bind current (
             state:
             computation.bind
-              (prepare {
+              (observer.emit { operation = "kernel.transition.typed-neutral"; } (prepare {
                 inherit (args)
                   judgment
                   limits
@@ -383,7 +384,7 @@ let
                   value
                   peerValue
                   ;
-              })
+              }))
               (
                 descriptor:
                 computation.bind (observe descriptor state.observer) (
