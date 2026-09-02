@@ -598,6 +598,308 @@ let
       depth = 64;
     };
   };
+  transition = privateGraph.kernel.components.neutralTransition;
+  transitionBudget = privateGraph.kernel.components.budget;
+  transitionResult = privateGraph.kernel.components.result;
+  transitionComputation = privateGraph.logismos.public.computation;
+  transitionLimits = (transitionBudget.merge { }).value;
+  transitionHead = sem.neutral 0;
+  applyClosure =
+    closure: arguments:
+    let
+      environment = builtins.foldl' (
+        current: argument: (sem.extendEnvironment current (sem.valueCell argument)).value
+      ) closure.environment arguments;
+    in
+    evaluation.direct.runRoot {
+      inherit environment;
+      root = closure.body;
+    };
+  runTransition =
+    {
+      type,
+      item,
+      expectedType,
+      limits ? transitionLimits,
+    }:
+    let
+      executed = transitionComputation.run {
+        computation = transition.replay {
+          judgment = "conversion";
+          inherit limits;
+          ctx = unitContext;
+          initial = {
+            inherit type;
+            value = transitionHead;
+            observer = null;
+          };
+          spine = [ item ];
+          spineCount = 1;
+          peerValue = transitionHead;
+          peerSpine = [ item ];
+          peerSpineCount = 1;
+          budgetName = "comparison";
+          malformed = transitionResult.internal "conversion" 1 transitionResult.codes.malformedSemantic;
+          mismatch =
+            transitionResult.failure "conversion" 1 transitionResult.codes.mismatch [ ] "convertible"
+              "distinct";
+          observe = _descriptor: observer: transitionComputation.pure observer;
+        };
+        reader = {
+          judgment = "conversion";
+        };
+        state = transitionBudget.initial;
+      };
+      expectedValue = sem.extendNeutral transitionHead item;
+    in
+    {
+      inherit executed expectedType expectedValue;
+      exact =
+        executed.kind == "success"
+        && executed.value.type == expectedType
+        && executed.value.value == expectedValue
+        && executed.value.peerValue == expectedValue;
+    };
+  dependentIdentity = carrier: level: r.identityType carrier (r.variable level) (r.variable level);
+  applicationCodomain = sem.closure (sem.initialEnvironment 0) (dependentIdentity r.unitType 0);
+  applicationItem = sem.spineItem {
+    kind = "application";
+    argument = sem.valueCell sem.unit;
+  };
+  applicationTransition = runTransition {
+    type = sem.pi (sem.valueCell sem.unitType) applicationCodomain;
+    item = applicationItem;
+    expectedType = (applyClosure applicationCodomain [ sem.unit ]).value;
+  };
+  transitionResourceExactCase = runTransition {
+    type = sem.pi (sem.valueCell sem.unitType) applicationCodomain;
+    item = applicationItem;
+    expectedType = (applyClosure applicationCodomain [ sem.unit ]).value;
+    limits = (transitionBudget.merge { comparison = 2; }).value;
+  };
+  transitionResourceOneOverCase = runTransition {
+    type = sem.pi (sem.valueCell sem.unitType) applicationCodomain;
+    item = applicationItem;
+    expectedType = (applyClosure applicationCodomain [ sem.unit ]).value;
+    limits = (transitionBudget.merge { comparison = 1; }).value;
+  };
+  sigmaCodomain = sem.closure (sem.initialEnvironment 0) (dependentIdentity r.unitType 0);
+  firstProjectionItem = sem.spineItem { kind = "first-projection"; };
+  firstProjectionTransition = runTransition {
+    type = sem.sigma (sem.valueCell sem.unitType) sigmaCodomain;
+    item = firstProjectionItem;
+    expectedType = sem.unitType;
+  };
+  semanticFirstProjection = sem.extendNeutral transitionHead firstProjectionItem;
+  secondProjectionItem = sem.spineItem { kind = "second-projection"; };
+  secondProjectionTransition = runTransition {
+    type = sem.sigma (sem.valueCell (sem.universe r.levelZero)) sigmaCodomain;
+    item = secondProjectionItem;
+    expectedType = (applyClosure sigmaCodomain [ semanticFirstProjection ]).value;
+  };
+  sumMotiveClosure = sem.closure (sem.initialEnvironment 0) (
+    dependentIdentity (r.sumType r.unitType r.unitType) 0
+  );
+  sumEliminationItem = sem.spineItem {
+    kind = "sum-elimination";
+    motive = sumMotiveClosure;
+    leftBranch = sem.closure (sem.initialEnvironment 0) (r.refl (r.leftInjection (r.variable 0)));
+    rightBranch = sem.closure (sem.initialEnvironment 0) (r.refl (r.rightInjection (r.variable 0)));
+  };
+  sumEliminationTransition = runTransition {
+    type = sem.sumType (sem.valueCell (sem.universe r.levelZero)) (
+      sem.valueCell (sem.universe r.levelZero)
+    );
+    item = sumEliminationItem;
+    expectedType = (applyClosure sumMotiveClosure [ transitionHead ]).value;
+  };
+  unitMotiveClosure = sem.closure (sem.initialEnvironment 0) (dependentIdentity r.unitType 0);
+  unitEliminationItem = sem.spineItem {
+    kind = "unit-elimination";
+    motive = unitMotiveClosure;
+    case = sem.valueCell (sem.refl (sem.valueCell sem.unit));
+  };
+  unitEliminationTransition = runTransition {
+    type = sem.unitType;
+    item = unitEliminationItem;
+    expectedType = (applyClosure unitMotiveClosure [ transitionHead ]).value;
+  };
+  emptyMotiveClosure = sem.closure (sem.initialEnvironment 0) (dependentIdentity r.emptyType 0);
+  emptyEliminationItem = sem.spineItem {
+    kind = "empty-elimination";
+    motive = emptyMotiveClosure;
+  };
+  emptyEliminationTransition = runTransition {
+    type = sem.emptyType;
+    item = emptyEliminationItem;
+    expectedType = (applyClosure emptyMotiveClosure [ transitionHead ]).value;
+  };
+  identityMotiveClosure = sem.closure (sem.initialEnvironment 0) (
+    r.identityType (r.identityType r.unitType (r.variable 0) (r.variable 1)) (r.variable 2) (
+      r.variable 2
+    )
+  );
+  identityEliminationItem = sem.spineItem {
+    kind = "identity-elimination";
+    motive = identityMotiveClosure;
+    reflBranch = sem.closure (sem.initialEnvironment 0) (r.refl (r.refl (r.variable 0)));
+  };
+  identitySource = sem.unitType;
+  identityTarget = sem.unitType;
+  identityEliminationTransition = runTransition {
+    type = sem.identityType (sem.valueCell (sem.universe r.levelZero)) (sem.valueCell identitySource) (
+      sem.valueCell identityTarget
+    );
+    item = identityEliminationItem;
+    expectedType =
+      (applyClosure identityMotiveClosure [
+        identitySource
+        identityTarget
+        transitionHead
+      ]).value;
+  };
+  transitionFamilyResults = [
+    applicationTransition
+    firstProjectionTransition
+    secondProjectionTransition
+    sumEliminationTransition
+    unitEliminationTransition
+    emptyEliminationTransition
+    identityEliminationTransition
+  ];
+  readbackCase =
+    {
+      entryType,
+      term,
+      expectedTerm ? term,
+    }:
+    let
+      contextResult = checked [ entryType ];
+      inferred = kernel.infer {
+        contextValue = contextResult.context;
+        envelope = r.envelope 1 term [ ];
+      };
+      quoted =
+        if inferred.ok then
+          kernel.quote {
+            contextValue = contextResult.context;
+            inherit (inferred) type value;
+          }
+        else
+          inferred;
+      expected = r.envelope 1 expectedTerm [ ];
+    in
+    {
+      inherit
+        contextResult
+        inferred
+        quoted
+        expected
+        ;
+      exact = contextResult.ok && inferred.ok && quoted.ok && quoted.value == expected;
+    };
+  transitionReadbacks = {
+    application = readbackCase {
+      entryType = r.pi r.unitType (dependentIdentity r.unitType 0);
+      term = r.application (r.variable 0) r.unit;
+    };
+    firstProjection = readbackCase {
+      entryType = r.sigma r.emptyType (dependentIdentity r.emptyType 0);
+      term = r.firstProjection (r.variable 0);
+    };
+    secondProjection = readbackCase {
+      entryType = r.sigma r.unitType (dependentIdentity r.unitType 0);
+      term = r.secondProjection (r.variable 0);
+    };
+    sumElimination = readbackCase {
+      entryType = r.sumType (r.universe r.levelZero) (r.universe r.levelZero);
+      term =
+        r.sumElimination (r.variable 0)
+          (dependentIdentity (r.sumType (r.universe r.levelZero) (r.universe r.levelZero)) 1)
+          (r.refl (r.leftInjection (r.variable 1)))
+          (r.refl (r.rightInjection (r.variable 1)));
+    };
+    unitElimination = readbackCase {
+      entryType = r.unitType;
+      term = r.unitElimination (r.variable 0) (dependentIdentity r.unitType 1) (r.refl r.unit);
+      expectedTerm = r.unitElimination (r.variable 0) (r.identityType r.unitType r.unit r.unit) (
+        r.refl r.unit
+      );
+    };
+    emptyElimination = readbackCase {
+      entryType = r.emptyType;
+      term = r.emptyElimination (r.variable 0) (dependentIdentity r.emptyType 1);
+    };
+    identityElimination = readbackCase {
+      entryType = r.identityType (r.universe r.levelZero) r.unitType r.unitType;
+      term = r.identityElimination (r.variable 0) (r.identityType (r.identityType (r.universe r.levelZero)
+        (r.variable 1)
+        (r.variable 2)
+      ) (r.variable 3) (r.variable 3)) (r.refl (r.refl (r.variable 1)));
+    };
+  };
+  transitionReadbackResults = builtins.attrValues transitionReadbacks;
+  argumentType = r.universe r.levelZero;
+  argumentFunctionType = r.pi argumentType (dependentIdentity argumentType 0);
+  applicationArgumentLeft = readbackCase {
+    entryType = argumentFunctionType;
+    term = r.application (r.variable 0) r.unitType;
+  };
+  applicationArgumentRight = readbackCase {
+    entryType = argumentFunctionType;
+    term = r.application (r.variable 0) r.emptyType;
+  };
+  transitionOrderTerm =
+    r.unitElimination (r.application (r.variable 0) r.unit) (r.universe r.levelZero)
+      r.unitType;
+  transitionOrderCase = readbackCase {
+    entryType = r.pi r.unitType r.unitType;
+    term = transitionOrderTerm;
+  };
+  transitionOrderKinds = map (item: item.kind) transitionOrderCase.inferred.value.spine;
+  pairedFunctionType = r.pi argumentType (r.pi argumentType r.emptyType);
+  pairedContext = (checked [ pairedFunctionType ]).context;
+  pairedLeft = kernel.infer {
+    contextValue = pairedContext;
+    envelope = r.envelope 1 (r.application (r.application (r.variable 0) r.unitType) r.unitType) [ ];
+  };
+  pairedRight = kernel.infer {
+    contextValue = pairedContext;
+    envelope = r.envelope 1 (r.application (r.application (r.variable 0) r.unitType) r.emptyType) [ ];
+  };
+  pairedEqual = kernel.convertTerms {
+    contextValue = pairedContext;
+    type = sem.emptyType;
+    left = pairedLeft.value;
+    right = pairedLeft.value;
+  };
+  pairedChanged = kernel.convertTerms {
+    contextValue = pairedContext;
+    type = sem.emptyType;
+    left = pairedLeft.value;
+    right = pairedRight.value;
+  };
+  transitionOrderLarge = kernel.quote {
+    contextValue = transitionOrderCase.contextResult.context;
+    inherit (transitionOrderCase.inferred) type value;
+    limits = {
+      checking = 4096;
+      comparison = 4096;
+      context = 256;
+      conversion = 4096;
+      depth = 64;
+      output = 256;
+      readback = 4096;
+    };
+  };
+  sumLeftFailureCase = readbackCase {
+    entryType = r.sumType r.unitType r.unitType;
+    term =
+      r.sumElimination (r.variable 0) (dependentIdentity (r.sumType r.unitType r.unitType) 1)
+        (r.variable 99)
+        (builtins.throw "right branch forced after left failure");
+  };
+  sumLeftFailureAttempt = builtins.tryEval sumLeftFailureCase.inferred.ok;
   sumEtaControl = sumEta.ok && !sumEtaOptimized.ok && !sumEtaOracle.ok;
   emptyEtaControl = emptyEta.ok && !emptyEtaOptimized.ok && !emptyEtaOracle.ok;
   identityEtaControl = identityEta.ok && !identityEtaOptimized.ok && !identityEtaOracle.ok;
@@ -1007,7 +1309,71 @@ let
     optimizedReadbackBoundary =
       builtins.length conversionSections == 3
       && !(contains "readback." optimizedConversionSource)
+      && !(contains "quoteAt" optimizedConversionSource)
+      && !(contains "oracle" optimizedConversionSource)
       && contains "readback.quoteAt" oracleConversionSource;
+    transitionExportSetExact =
+      builtins.attrNames transition == [
+        "advance"
+        "applicationArguments"
+        "applicationDomain"
+        "emptyMotive"
+        "identityBranches"
+        "identityMotive"
+        "kinds"
+        "observePhase"
+        "prepare"
+        "replay"
+        "sumBranch"
+        "sumMotive"
+        "typeKinds"
+        "unitCases"
+        "unitMotive"
+      ];
+    transitionFactoryProduction = privateGraph.kernel.wiring.transitionAdvance == "production";
+    transitionKindsExact =
+      transition.kinds == builtins.attrNames evaluation.representation.schema.spineItemFields
+      && builtins.attrNames transition.typeKinds == transition.kinds;
+    transitionSuccessorsExact = builtins.all (case: case.exact) transitionFamilyResults;
+    transitionEnvelopesExact = builtins.all (case: case.exact) transitionReadbackResults;
+    transitionBinderSensitive =
+      transitionReadbacks.application.exact
+      && transitionReadbacks.secondProjection.exact
+      && transitionReadbacks.sumElimination.exact
+      && transitionReadbacks.unitElimination.exact
+      && transitionReadbacks.identityElimination.exact;
+    transitionSumFailureStopsRight = sumLeftFailureAttempt.success && !sumLeftFailureAttempt.value;
+    transitionExtensionMetamorphic = builtins.all (
+      case:
+      case.executed.kind == "success"
+      && case.executed.value.value == case.expectedValue
+      && case.executed.value.peerValue == case.expectedValue
+      && case.executed.value.value.spine == case.expectedValue.spine
+      && case.executed.value.peerValue.spine == case.expectedValue.spine
+    ) transitionFamilyResults;
+    transitionOldestFirst =
+      transitionOrderCase.exact
+      && transitionOrderCase.inferred.value.spineCount == 2
+      &&
+        transitionOrderKinds == [
+          "unit-elimination"
+          "application"
+        ];
+    transitionArgumentMetamorphic =
+      applicationArgumentLeft.exact
+      && applicationArgumentRight.exact
+      && applicationArgumentLeft.expected != applicationArgumentRight.expected;
+    transitionPairedMetamorphic = pairedEqual.ok && !pairedChanged.ok;
+    transitionResourceExact = transitionResourceExactCase.exact;
+    transitionResourceOneOver =
+      transitionResourceOneOverCase.executed.kind == "failure"
+      && transitionResourceOneOverCase.executed.failure.kind == "resource-exhaustion"
+      && transitionResourceOneOverCase.executed.failure.code == "AXIOM-KERNEL-001"
+      && transitionResourceOneOverCase.executed.failure.budget == "comparison"
+      && transitionResourceOneOverCase.executed.failure.limit == 1
+      && transitionResourceOneOverCase.executed.failure.consumed == 0;
+    transitionLimitMetamorphic =
+      transitionOrderLarge.ok && transitionOrderLarge.value == transitionOrderCase.quoted.value;
     invalidConversionTypeRejected =
       !invalidConversionTypeResult.ok
       && invalidConversionTypeResult.kind == "internal-failure"
@@ -1118,6 +1484,24 @@ let
 in
 {
   inherit evidence;
+  debug = {
+    readbacks = builtins.mapAttrs (_name: case: {
+      contextOk = case.contextResult.ok;
+      inferOk = case.inferred.ok;
+      inferCode = case.inferred.code or null;
+      quoteOk = case.quoted.ok;
+      quoteCode = case.quoted.code or null;
+      inherit (case) exact expected;
+      actual = case.quoted.value or null;
+    }) transitionReadbacks;
+    paired = {
+      leftOk = pairedLeft.ok;
+      rightOk = pairedRight.ok;
+      equalOk = pairedEqual.ok;
+      changedOk = pairedChanged.ok;
+      changedCode = pairedChanged.code or null;
+    };
+  };
   ok =
     if builtins.all (name: evidence.${name}) (builtins.attrNames evidence) then
       true
