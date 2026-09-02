@@ -7,6 +7,10 @@
   budget,
   logismos,
   observer,
+  advanceFactory ? {
+    identity = "production";
+    select = _capabilities: baseAdvance: baseAdvance;
+  },
 }:
 let
   inherit (logismos) computation traversal;
@@ -257,7 +261,7 @@ let
           )
       )
     );
-  advance =
+  baseAdvance =
     d:
     let
       finish =
@@ -299,6 +303,13 @@ let
           ]) finish
         )
       );
+  # selection happens before replay closes over the only advancement path
+  selectedAdvance = advanceFactory.select { inherit computation; } baseAdvance;
+  advance =
+    if builtins.isFunction selectedAdvance then
+      selectedAdvance
+    else
+      throw "invalid kernel transition advance implementation";
   observePhase =
     descriptor: observation:
     let

@@ -7,9 +7,13 @@
     identity = "production";
     build = args: import ./budget.nix args;
   },
+  advanceFactory ? {
+    identity = "production";
+    select = _capabilities: baseAdvance: baseAdvance;
+  },
 }:
 let
-  validFactory =
+  validBudgetFactory =
     builtins.isAttrs budgetFactory
     &&
       builtins.attrNames budgetFactory == [
@@ -18,10 +22,19 @@ let
       ]
     && builtins.isFunction budgetFactory.build
     && builtins.isString budgetFactory.identity;
+  validAdvanceFactory =
+    builtins.isAttrs advanceFactory
+    &&
+      builtins.attrNames advanceFactory == [
+        "identity"
+        "select"
+      ]
+    && builtins.isString advanceFactory.identity
+    && builtins.isFunction advanceFactory.select;
   representation = import ./representation.nix { inherit evaluation; };
   result = import ./result.nix { inherit representation core; };
   budget =
-    if validFactory then
+    if validBudgetFactory then
       budgetFactory.build { inherit logismos representation result; }
     else
       throw "invalid kernel budget factory";
@@ -44,18 +57,23 @@ let
       logismos
       ;
   };
-  neutralTransition = import ./neutral-transition.nix {
-    inherit
-      evaluation
-      representation
-      result
-      context
-      semantic
-      budget
-      logismos
-      observer
-      ;
-  };
+  neutralTransition =
+    if validAdvanceFactory then
+      import ./neutral-transition.nix {
+        inherit
+          evaluation
+          representation
+          result
+          context
+          semantic
+          budget
+          logismos
+          observer
+          advanceFactory
+          ;
+      }
+    else
+      throw "invalid kernel transition advance factory";
   readback = import ./readback.nix {
     inherit
       core
@@ -122,6 +140,7 @@ in
   wiring = {
     observer = observer.identity;
     budget = budgetFactory.identity;
+    transitionAdvance = advanceFactory.identity;
     core = core.representation.generation;
     evaluation = evaluation.representation.generation;
     logismos = "logismos-computation-1";

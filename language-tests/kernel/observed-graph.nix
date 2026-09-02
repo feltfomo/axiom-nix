@@ -9,6 +9,7 @@ let
       observer,
       budgetFactory ? null,
       relationFactory ? null,
+      advanceFactory ? null,
     }:
     let
       logismosArguments = { inherit observer; };
@@ -34,7 +35,9 @@ let
         logismos = logismos.public;
       };
       kernel = import ../../language/kernel/construct.nix (
-        if budgetFactory == null then kernelArguments else kernelArguments // { inherit budgetFactory; }
+        kernelArguments
+        // (if budgetFactory == null then { } else { inherit budgetFactory; })
+        // (if advanceFactory == null then { } else { inherit advanceFactory; })
       );
     in
     {
@@ -64,18 +67,20 @@ in
       hook,
       budgetFactory ? null,
       relationFactory ? null,
+      advanceFactory ? null,
     }:
     graph {
-      inherit budgetFactory relationFactory;
+      inherit budgetFactory relationFactory advanceFactory;
       observer = observation.observed hook;
     };
   silent =
     {
       budgetFactory ? null,
       relationFactory ? null,
+      advanceFactory ? null,
     }:
     graph {
-      inherit budgetFactory relationFactory;
+      inherit budgetFactory relationFactory advanceFactory;
       observer = observation.silent;
     };
 }
