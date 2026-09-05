@@ -1,6 +1,8 @@
 {
   description = "functional machinery and a typed language layer for Nix";
 
+  nixConfig.extra-experimental-features = [ "pipe-operators" ];
+
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =

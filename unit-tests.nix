@@ -44,7 +44,10 @@ let
     );
 in
 {
-  legacy = fromList legacy.cases;
+  legacy = fromList legacy.cases // {
+    types = fromAttrs (import ./tests/types.nix { inherit lib; });
+    algebra = fromAttrs (import ./tests/algebra.nix { inherit lib; });
+  };
   language = {
     host-boundary = fromList hostBoundary.cases;
     core-syntax = fromAttrs coreSyntax.cases;

@@ -1,10 +1,12 @@
 # Axiom
 
-Axiom is a small functional-machinery library for Nix. It provides reusable building blocks for validated computation, closed schemas, deterministic registries, capability requirements, ordered phases, identity selection, tagged values, and canonical names.
+Axiom is a small functional-machinery library for Nix. It provides reusable building blocks for validated computation, runtime types, parser-backed schemas, stable string sets, deterministic registries, capability requirements, ordered phases, identity selection, tagged values, and canonical names.
 
 Axiom is for library and subsystem maintainers. It does not define user-facing error wording, render diagnostics, catch arbitrary exceptions, or know anything about NixOS and Home Manager options. Callers supply their own diagnostic values and decide how failures become messages or exceptions.
 
 ## Import
+
+Shared source uses pipe syntax. On Nix 2.25, enable `extra-experimental-features = pipe-operators` or accept the flake's setting. The tested Lix development evaluator supports pipes directly. See [compatibility and measurements](runtime-types.md).
 
 ```nix
 # from the flake input, which is how a consumer reaches it
@@ -14,7 +16,7 @@ axiom = inputs.axiom.lib.axiom { inherit lib; };
 axiom = import ./src { inherit lib; };
 ```
 
-The import returns eight modules:
+The import returns ten modules. `types` describes runtime boundaries; it does not import or expose the separate `language/` kernel. `sets` supplies stable string-set operations.
 
 ```nix
 inherit (axiom)
@@ -26,6 +28,8 @@ inherit (axiom)
   canonical
   phases
   tagged
+  sets
+  types
   ;
 ```
 
@@ -41,10 +45,12 @@ inherit (axiom)
 | `canonical` | Stable names or paths must be assembled from validated non-empty string parts. |
 | `phases` | Registrations belong to a closed set of named phases and must expose a runnable shape. |
 | `tagged` | Several explicit result variants need construction, recognition, mapping, and dispatch. |
+| `types` | Nested runtime boundaries need reusable descriptions and precise error paths. |
+| `sets` | String membership and stable union, intersection, difference, or deduplication are needed. |
 
 ## The common result model
 
-`validation`, `schema`, `registry`, and `phases` use the same result shape:
+`validation`, `schema`, `types`, `registry`, and `phases` use the same result shape:
 
 ```nix
 {
@@ -61,7 +67,7 @@ A failed result has diagnostics and no `value`:
 }
 ```
 
-Diagnostics are opaque to Axiom. They may be strings, Krisis records, or another caller-owned value.
+Diagnostics are opaque to the validation combinators. Type validators emit neutral shape/path issues; callers may adapt them into strings, Krisis records, or another domain representation.
 
 ```nix
 result = validation.map2
@@ -230,7 +236,8 @@ Axiom throws only for malformed direct use of Axiom itself, such as passing a no
 
 Domain failures belong to the caller:
 
-- Schema invokes `onRecord`, `onUnknown`, `onMissing`, and `onInvalid`.
+- Schema invokes caller-owned field callbacks or parser functions.
+- Types return neutral shape/path issues, leaving diagnostic codes and wording to consumers.
 - Registry invokes `diagnosticsFor` and `onDuplicate`.
 - Phases invokes `onUnknown` and `onInvalid`.
 - Validation stores diagnostics without inspecting them.
@@ -253,6 +260,7 @@ See [Laws and laziness](laws-and-laziness.md) before adding validators around de
 
 ## Documentation
 
+- [Runtime types, composition, and measurements](runtime-types.md)
 - [API reference](reference.md)
 - [Recipes](recipes.md)
 - [Laws and laziness](laws-and-laziness.md)

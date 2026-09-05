@@ -40,7 +40,7 @@ Validation checks only that diagnostic collections are lists. It does not inspec
 
 ### The schema specification is closed
 
-The top-level schema specification accepts only `fields`, `onRecord`, `allowUnknown`, `onUnknown`, and `order`. Field descriptors use `required`, `default`, `validate`, `normalize`, `onMissing`, and `onInvalid`. Extra field-descriptor attributes are not part of the public contract and should not be relied on.
+The top-level schema specification accepts only `fields`, `onRecord`, `allowUnknown`, `onUnknown`, and `order`. Field descriptors use `required`, `default`, `validate`, `normalize`, `parse`, `onMissing`, and `onInvalid`. A `parse` field returns a validation result and cannot also define `validate`, `normalize`, or `onInvalid`. Extra field-descriptor attributes are not part of the public contract and should not be relied on.
 
 ### Closed schemas require unknown-field policy
 
@@ -52,7 +52,7 @@ When supplied, `order` must contain every declared field exactly once. It determ
 
 ### Defaults follow the same value path
 
-Defaults are validated and normalized. A rejecting default invokes `onInvalid` just like a present value.
+Defaults follow the same validation and normalization path as present values. With `validate`, a rejecting default invokes `onInvalid`; with `parse`, its returned diagnostics and value determine the result.
 
 ### Optional absence is omission
 
@@ -64,7 +64,7 @@ With `allowUnknown = true`, the original record is preserved and normalized decl
 
 ### Schema inspection is shallow
 
-Schema itself checks the input record and field presence. It does not recursively traverse values. A field's `validate` and `normalize` functions are the forcing boundary.
+Schema itself checks the input record and field presence. It does not recursively traverse values. A field's `validate`/`normalize` functions or its `parse` function define the forcing boundary.
 
 For example:
 
@@ -227,3 +227,16 @@ Before adding a callback, ask:
 Axiom direct-use errors begin with `axiom:` and indicate malformed library integration. Ordinary domain errors should be produced through caller callbacks or observations and rendered by the consuming subsystem.
 
 Do not expose an Axiom direct-use error as if it were a normal end-user validation failure. Fix the integration that violated the Axiom contract.
+
+
+## Runtime boundary laws
+
+Each runtime type's `validate` function returns the same success/failure shape. Products, attribute maps, and lists accumulate reachable independent errors. Paths contain sorted field names and zero-based list indexes. An invalid parent container stops descent; unknown record fields are named without inspecting their values.
+
+`types.opaque` admits even a throwing value without forcing it. Primitive types force only what their predicates require. Refinement predicates run only after base success. `oneOf` stops at the first success and inspects no later alternative; when all fail it keeps alternative diagnostics in order. `variant` reads only the selected case and payload. The tagged marker is not an unforgeable proof or authority token.
+
+On canonical `success`/non-empty `failure` results, `validation.andThen` has left/right identity with `success` and is associative for total callbacks returning canonical results. It stops at the first failed dependency. Accumulating `map2` deliberately has different failure semantics; these operations are not interchangeable instances of one applicative/monadic abstraction.
+
+`traverseAttrs` uses sorted key order. `mapDiagnostics` preserves success without invoking the mapper and maps failed diagnostic members lazily. Stable string sets preserve first occurrence order and do not compare arbitrary function or payload values.
+
+The new laws and poison boundaries run in the existing nix-unit suite. See [runtime types](runtime-types.md) for the API, forcing limits, and measured indexing changes.

@@ -106,7 +106,7 @@ One explicit preparation pattern is:
 ```nix
 preparedResult = axiom.validation.traverse pluginSchema plugins;
 
-registryResult = axiom.validation.map
+registryResult = axiom.validation.andThen
   (prepared:
     axiom.registry.compile {
       registrations = prepared;
@@ -118,16 +118,7 @@ registryResult = axiom.validation.map
   preparedResult;
 ```
 
-Because the mapped function returns another validation result, finish the outer and inner results separately or add a caller-local flatten helper:
-
-```nix
-flatten = result:
-  axiom.validation.finish axiom.validation.failure result;
-
-compiled = flatten registryResult;
-```
-
-For most subsystem code, a single preparation function that returns one final validation result is clearer than deeply nesting generic combinators.
+`andThen` does not compile a registry when preparation fails and does not nest the returned validation result. Finish `registryResult` once at the caller's reporting boundary. Keep independent checks in `map2` or `sequence`; dependent phases belong in `andThen`.
 
 ## Select an implementation by requirements
 

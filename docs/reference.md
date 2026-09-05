@@ -69,6 +69,18 @@ Equivalent to `validation.sequence (map f values)`.
 validation.traverse validateEntry entries
 ```
 
+### `validation.andThen f result`
+
+Run a result-returning dependent stage after success. Return its result directly; on failure, preserve diagnostics without calling `f` or inspecting a failed value. This is fail-fast dependency composition, not independent accumulation.
+
+### `validation.mapDiagnostics f result`
+
+Map each diagnostic, preserving order and failure classification. Do not call `f` or force the payload of a successful result.
+
+### `validation.traverseAttrs f attrs`
+
+Call `f name value` for each field in sorted key order, accumulate diagnostics in that order, and return a successful attrset. Successful field values remain lazy. An empty attrset succeeds without calling `f`.
+
 ### `validation.collect groups`
 
 Flatten a list of diagnostic lists while preserving group and item order.
@@ -133,6 +145,7 @@ A field specification accepts:
 | `normalize` | Transformation applied after validation. Defaults to identity. |
 | `onMissing` | Called as `record: diagnostic` for an absent required field. |
 | `onInvalid` | Called as `record: value: diagnostic` after predicate rejection. |
+| `parse` | Return a validation result for a present or default value. Exclusive with `validate`, `normalize`, and `onInvalid`. |
 
 A required field must define `onMissing` unless it has a default. A rejecting validator must have `onInvalid`; otherwise Axiom reports malformed schema use.
 
@@ -352,3 +365,10 @@ tagged.match {
 ```
 
 Missing handlers, non-function handlers, and untagged values are malformed direct use and throw Axiom errors.
+
+
+## `types` and `sets`
+
+The complete runtime type constructors, description/result shapes, and forcing rules are in [Runtime types](runtime-types.md). Types include outer primitives, `opaque`, `listOf`, `attrsOf`, closed `record`, `nullOr`, string `enum`, guarded `refine`, ordered `oneOf`, and tagged `variant`.
+
+`sets.index values` returns string-name membership as an attrset. `sets.unique values`, `sets.union left right`, `sets.intersection left right`, and `sets.difference left right` return deduplicated string lists in first-occurrence order. Intersection and difference retain left order; union appends unseen right members. These are string operations, not generic equality or Ownerships claim algebra.

@@ -1,4 +1,8 @@
-{ lib, validation }:
+{
+  lib,
+  validation,
+  sets,
+}:
 let
   invalid =
     field: expected: value:
@@ -10,6 +14,10 @@ let
       invalid "field '${name}'" "an attribute set" field
     else if field ? required && !builtins.isBool field.required then
       invalid "field '${name}'.required" "a boolean" field.required
+    else if field ? parse && !builtins.isFunction field.parse then
+      invalid "field '${name}'.parse" "a function" field.parse
+    else if field ? parse && (field ? validate || field ? normalize || field ? onInvalid) then
+      throw "axiom: schema field '${name}' cannot combine parse with validate, normalize, or onInvalid"
     else if field ? validate && !builtins.isFunction field.validate then
       invalid "field '${name}'.validate" "a function" field.validate
     else if field ? normalize && !builtins.isFunction field.normalize then
@@ -52,7 +60,7 @@ let
           invalid "fields" "an attribute set" fields
         else if order != null && (!builtins.isList order || !lib.all builtins.isString order) then
           invalid "order" "a list of strings or null" order
-        else if lib.unique fieldNames != fieldNames then
+        else if sets.unique fieldNames != fieldNames then
           throw "axiom: schema field order must be unique"
         else if builtins.sort builtins.lessThan fieldNames != declaredNames then
           throw "axiom: schema field order must name every declared field exactly once"
@@ -74,7 +82,9 @@ let
             validation.failure [ (onRecord record) ]
           else
             let
-              unknownNames = builtins.filter (name: !(builtins.elem name fieldNames)) (builtins.attrNames record);
+              unknownNames = builtins.filter (name: !(builtins.hasAttr name checkedFields)) (
+                builtins.attrNames record
+              );
               unknownDiagnostics =
                 if allowUnknown then [ ] else map (name: onUnknown name record.${name}) unknownNames;
               fieldResults = map (
@@ -84,59 +94,36 @@ let
                   present = builtins.hasAttr name record;
                   validator = field.validate or (_value: true);
                   normalize = field.normalize or (value: value);
-                  result =
-                    if present then
-                      let
-                        value = record.${name};
-                      in
+                  parse =
+                    field.parse or (
+                      value:
                       if validator value then
-                        validation.success {
-                          inherit name;
-                          present = true;
-                          value = normalize value;
-                        }
+                        validation.success (normalize value)
                       else if field ? onInvalid then
                         validation.failure [ (field.onInvalid record value) ]
                       else
                         throw "axiom: schema field '${name}' rejected a value without onInvalid"
-                    else if field ? default then
-                      let
-                        value = field.default;
-                      in
-                      if validator value then
-                        validation.success {
-                          inherit name;
-                          present = true;
-                          value = normalize value;
-                        }
-                      else if field ? onInvalid then
-                        validation.failure [ (field.onInvalid record value) ]
-                      else
-                        throw "axiom: schema field '${name}' rejected its default without onInvalid"
-                    else if field.required or false then
-                      validation.failure [ (field.onMissing record) ]
-                    else
-                      validation.success {
-                        inherit name;
-                        present = false;
-                      };
+                    );
                 in
-                result
+                if present || field ? default then
+                  validation.map (value: {
+                    inherit name value;
+                    present = true;
+                  }) (parse (if present then record.${name} else field.default))
+                else if field.required or false then
+                  validation.failure [ (field.onMissing record) ]
+                else
+                  validation.success {
+                    inherit name;
+                    present = false;
+                  }
               ) fieldNames;
               diagnostics = validation.collect (
                 [ unknownDiagnostics ] ++ map (result: result.diagnostics) fieldResults
               );
               normalizedFields = builtins.listToAttrs (
                 builtins.concatMap (
-                  result:
-                  if result.diagnostics != [ ] || !result.value.present then
-                    [ ]
-                  else
-                    [
-                      {
-                        inherit (result.value) name value;
-                      }
-                    ]
+                  result: if !result.value.present then [ ] else [ { inherit (result.value) name value; } ]
                 ) fieldResults
               );
               normalized = if allowUnknown then record // normalizedFields else normalizedFields;

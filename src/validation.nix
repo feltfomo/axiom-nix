@@ -88,7 +88,43 @@ let
       in
       if diagnostics == [ ] then success (map (result: result.value) checked) else failure diagnostics;
 
-  traverse = f: values: sequence (map f values);
+  traverse = f: values: values |> map f |> sequence;
+
+  traverseAttrs =
+    f: values:
+    if !builtins.isFunction f then
+      invalid "traverseAttrs function" "a function" f
+    else if !builtins.isAttrs values then
+      invalid "values" "an attribute set" values
+    else
+      mapResult builtins.listToAttrs (
+        traverse (name: mapResult (value: { inherit name value; }) (f name values.${name})) (
+          builtins.attrNames values
+        )
+      );
+
+  andThen =
+    f: result:
+    if !builtins.isFunction f then
+      invalid "andThen function" "a function" f
+    else
+      let
+        checked = validateResult result;
+      in
+      if checked.diagnostics == [ ] then
+        validateResult (f checked.value)
+      else
+        failure checked.diagnostics;
+
+  mapDiagnostics =
+    f: result:
+    if !builtins.isFunction f then
+      invalid "diagnostic mapper" "a function" f
+    else
+      let
+        checked = validateResult result;
+      in
+      if checked.diagnostics == [ ] then success checked.value else failure (map f checked.diagnostics);
 
   optional =
     condition: diagnostic:
@@ -116,6 +152,9 @@ in
     map2
     sequence
     traverse
+    traverseAttrs
+    andThen
+    mapDiagnostics
     collect
     optional
     finish

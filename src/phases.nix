@@ -1,4 +1,8 @@
-{ lib, validation }:
+{
+  lib,
+  validation,
+  sets,
+}:
 let
   invalid =
     field: expected: value:
@@ -15,7 +19,7 @@ let
     }:
     if !builtins.isList names || !lib.all builtins.isString names then
       invalid "names" "a list of strings" names
-    else if lib.unique names != names then
+    else if sets.unique names != names then
       throw "axiom: phase names must be unique"
     else if !builtins.isList registrations then
       invalid "registrations" "a list" registrations
@@ -29,11 +33,12 @@ let
       invalid "onInvalid" "a function" onInvalid
     else
       let
+        knownNames = sets.index names;
         inspected = map (
           registration:
           let
             phase = phaseOf registration;
-            known = builtins.isString phase && builtins.elem phase names;
+            known = builtins.isString phase && builtins.hasAttr phase knownNames;
             valid = known && runnable registration;
           in
           {
@@ -52,18 +57,14 @@ let
           builtins.filter (entry: entry.known && !entry.valid) inspected
         );
         diagnostics = unknownDiagnostics ++ invalidDiagnostics;
-        byName = lib.genAttrs names (
-          name:
-          map (entry: entry.registration) (
-            builtins.filter (entry: entry.valid && entry.phase == name) inspected
-          )
-        );
+        grouped = builtins.groupBy (entry: entry.phase) (builtins.filter (entry: entry.valid) inspected);
+        byName = lib.genAttrs names (name: map (entry: entry.registration) (grouped.${name} or [ ]));
         compiled = {
           order = names;
           inherit registrations byName;
           for =
             name:
-            if builtins.elem name names then
+            if builtins.hasAttr name knownNames then
               byName.${name}
             else
               throw "axiom: unknown compiled phase '${name}'";

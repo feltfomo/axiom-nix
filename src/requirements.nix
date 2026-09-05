@@ -1,4 +1,4 @@
-{ lib }:
+{ lib, sets }:
 let
   invalid =
     field: expected: value:
@@ -9,21 +9,22 @@ let
     if !builtins.isList values || !lib.all builtins.isString values then
       invalid "values" "a list of strings" values
     else
-      lib.unique values;
+      sets.unique values;
 
-  evaluate =
+  evaluateNormalized =
     required: provided:
     let
-      required' = normalize required;
       provided' = normalize provided;
-      missing = builtins.filter (item: !(builtins.elem item provided')) required';
+      members = sets.index provided';
+      missing = builtins.filter (item: !(builtins.hasAttr item members)) required;
     in
     {
-      required = required';
+      inherit required missing;
       provided = provided';
-      inherit missing;
       satisfied = missing == [ ];
     };
+
+  evaluate = required: evaluateNormalized (normalize required);
 
   observe =
     {
@@ -40,18 +41,19 @@ let
       invalid "enabled" "a function" enabled
     else
       let
+        required' = normalize required;
         entries = map (
           candidate:
           let
             active = enabled candidate;
-            result = if active then evaluate required (providedBy candidate) else null;
+            result = if active then evaluateNormalized required' (providedBy candidate) else null;
           in
           {
             inherit candidate;
             enabled = active;
-            required = normalize required;
+            required = required';
             provided = if active then result.provided else [ ];
-            missing = if active then result.missing else normalize required;
+            missing = if active then result.missing else required';
             satisfied = active && result.satisfied;
           }
         ) candidates;
