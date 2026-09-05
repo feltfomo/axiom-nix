@@ -1,6 +1,5 @@
-# operation fixtures for the pre-rewrite baseline. semantic expectations here are
-# closed forms in the ladder depth, so a rung that stops depending on a nested
-# layer breaks the expectation instead of being absorbed by a copied number.
+# closed forms keep each operation ladder sensitive to every nested layer
+# instead of absorbing a missing layer into a copied observation.
 let
   graphs = import ./observed-graph.nix;
   observation = import ../../language/internal/operation-observer.nix;
@@ -101,13 +100,17 @@ let
   vector =
     overrides:
     {
+      application = 0;
       checking = 0;
       comparison = 0;
       context = 0;
       conversion = 0;
+      demand = 0;
       depth = 1;
       output = 0;
+      projection = 0;
       readback = 0;
+      transition = 0;
     }
     // overrides;
   expectations = n: {
@@ -116,8 +119,9 @@ let
       context = n + 1;
     };
     unitInference = vector {
+      application = n;
       checking = 2 * n + 1;
-      readback = 2 * n;
+      demand = n;
     };
     towerContext = vector {
       checking = 2 * n - 1;
@@ -125,21 +129,26 @@ let
     };
     towerVariable = vector { checking = 1; };
     towerProjection = vector {
+      application = n - 2;
       checking = n;
-      readback = 3 * n - 5;
+      demand = n - 1;
+      projection = n - 2;
     };
     readback = vector {
+      application = n - 1;
       context = n - 1;
+      demand = n - 1;
       depth = n;
       output = 2 * n - 1;
-      readback = 4 * n - 3;
+      readback = 2 * n - 1;
     };
     conversion = vector {
+      application = 2 * n - 2;
       comparison = 2 * n - 1;
       context = n - 1;
-      conversion = 2 * n - 1;
+      conversion = 1;
+      demand = 2 * n - 2;
       depth = n;
-      readback = 4 * n - 4;
     };
     oracle = vector {
       output = 2;

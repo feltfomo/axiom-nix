@@ -13,11 +13,10 @@ let
   r = core.representation;
   sem = evaluation.representation;
   inherit (logismos) computation;
+  # canonical syntax construction is distinct from quotation and the semantic work it invokes
   emit =
     limits: depth: value:
-    computation.bind (budget.charge "readback" limits "output" depth) (
-      _charged: computation.pure value
-    );
+    budget.protect "readback" limits "emitSyntaxNode" depth (_charged: computation.pure value);
   malformed =
     depth: checked:
     result.internal "readback" depth (
@@ -59,7 +58,7 @@ let
       computation.pure neutral;
   quoteNeutral =
     limits: ctx: value:
-    computation.bind (budget.charge "readback" limits "readback" ctx.depth) (
+    budget.protect "readback" limits "quoteNeutral" ctx.depth (
       _paid:
       let
         neutral = representation.neutralShape value;
@@ -91,7 +90,6 @@ let
                 peerSpine = null;
                 peerSpineCount = 0;
                 peerValue = null;
-                budgetName = "readback";
                 malformed = result.internal "readback" ctx.depth result.codes.malformedSemantic;
                 mismatch = result.internal "readback" ctx.depth result.codes.malformedSemantic;
                 observe =
@@ -171,7 +169,7 @@ let
     );
   quoteTypeAt =
     limits: ctx: value:
-    computation.bind (budget.charge "readback" limits "readback" ctx.depth) (
+    budget.protect "readback" limits "quoteType" ctx.depth (
       _paid:
       let
         checked = representation.semanticShape value;
@@ -185,7 +183,8 @@ let
         if !normalized.ok then
           computation.fail (result.internal "readback" ctx.depth result.codes.malformedSemantic)
         else
-          computation.bind (budget.chargeAmount "readback" limits "output" ctx.depth
+          # normalized levels reserve one output-node cost for every emitted level constructor
+          computation.bind (budget.chargeNamedAmount "readback" limits "emitSyntaxNode" ctx.depth
             normalized.outputConsumed
           ) (_level: emit limits ctx.depth (r.universe normalized.value))
       else if value.kind == "unit-type" then
@@ -252,7 +251,7 @@ let
     );
   quoteValue =
     limits: ctx: type: value:
-    computation.bind (budget.charge "readback" limits "readback" ctx.depth) (
+    budget.protect "readback" limits "quoteValue" ctx.depth (
       _paid:
       let
         typeChecked = representation.semanticShape type;

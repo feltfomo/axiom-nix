@@ -28,11 +28,10 @@ let
     );
   mismatch =
     depth: result.failure "conversion" depth result.codes.mismatch [ ] "convertible" "distinct";
-  chargeProgram =
-    limits: depth:
-    computation.bind (budget.charge "conversion" limits "conversion" depth) (
-      _conversion: budget.charge "conversion" limits "comparison" depth
-    );
+  # conversion enters once while recursive relations own their comparison charges
+  chargeComparison =
+    costName: limits: depth: protected:
+    budget.protect "conversion" limits costName depth protected;
   semanticFailureProgram = depth: checked: computation.fail (semanticFailure depth checked);
   mismatchProgram = depth: computation.fail (mismatch depth);
   typedNeutralRelationUnobserved =
@@ -107,7 +106,7 @@ let
             )
           );
     in
-    computation.bind (chargeProgram limits ctx.depth) (
+    chargeComparison "compareNeutral" limits ctx.depth (
       _paid:
       if !leftChecked.ok then
         semanticFailureProgram ctx.depth leftChecked
@@ -131,7 +130,6 @@ let
             inherit (left) spine spineCount;
             peerSpine = right.spine;
             peerSpineCount = right.spineCount;
-            budgetName = "comparison";
             malformed = result.internal "conversion" ctx.depth result.codes.malformedSemantic;
             mismatch = failure;
           }
@@ -338,9 +336,8 @@ let
     };
   compareTypeProgram =
     limits: ctx: left: right:
-    computation.bind
-      (observer.emit { operation = "kernel.conversion.type"; } (chargeProgram limits ctx.depth))
-      (
+    observer.emit { operation = "kernel.conversion.type"; } (
+      chargeComparison "compareType" limits ctx.depth (
         _paid:
         let
           lc = representation.semanticShape left;
@@ -360,12 +357,12 @@ let
           mismatchProgram ctx.depth
         else
           typeHandlers.${left.kind} limits ctx left right
-      );
+      )
+    );
   compareValueProgram =
     limits: ctx: type: left: right:
-    computation.bind
-      (observer.emit { operation = "kernel.conversion.term"; } (chargeProgram limits ctx.depth))
-      (
+    observer.emit { operation = "kernel.conversion.term"; } (
+      chargeComparison "compareTerm" limits ctx.depth (
         _paid:
         let
           tc = representation.semanticShape type;
@@ -384,7 +381,18 @@ let
           computation.fail (result.internal "conversion" ctx.depth result.codes.expectedType)
         else
           valueHandlers.${type.kind} limits ctx type left right
-      );
+      )
+    );
+  convertTypeProgram =
+    limits: ctx: left: right:
+    budget.protect "conversion" limits "enterTypeConversion" ctx.depth (
+      _entered: compareTypeProgram limits ctx left right
+    );
+  convertTermProgram =
+    limits: ctx: type: left: right:
+    budget.protect "conversion" limits "enterTermConversion" ctx.depth (
+      _entered: compareValueProgram limits ctx type left right
+    );
   materializeProgram =
     state: program:
     let
@@ -426,7 +434,7 @@ let
     if !context.validate contextValue then
       result.internal "type-conversion" 0 result.codes.malformedContext
     else
-      materializeProgram state (compareTypeProgram limits contextValue left right);
+      materializeProgram state (convertTypeProgram limits contextValue left right);
   compareTermsAt =
     {
       contextValue,
@@ -439,7 +447,7 @@ let
     if !context.validate contextValue then
       result.internal "term-conversion" 0 result.codes.malformedContext
     else
-      materializeProgram state (compareValueProgram limits contextValue type left right);
+      materializeProgram state (convertTermProgram limits contextValue type left right);
   convertTypes =
     {
       contextValue,
@@ -543,6 +551,8 @@ in
     oracle
     compareTypeProgram
     compareValueProgram
+    convertTypeProgram
+    convertTermProgram
     compareTypesAt
     compareTermsAt
     handlerKeys

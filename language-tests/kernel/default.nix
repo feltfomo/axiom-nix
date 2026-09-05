@@ -289,6 +289,165 @@ let
       output = 2;
     };
   };
+  resourceVector =
+    overrides:
+    {
+      application = 0;
+      checking = 0;
+      comparison = 0;
+      context = 0;
+      conversion = 0;
+      demand = 0;
+      depth = 0;
+      output = 0;
+      projection = 0;
+      readback = 0;
+      transition = 0;
+    }
+    // overrides;
+  privateBudget = privateGraph.kernel.components.budget;
+  privateComputation = privateGraph.logismos.public.computation;
+  privateSemantic = import ../../language/kernel/semantic.nix {
+    inherit core evaluation;
+    representation = kernelRepresentation;
+    result = kernelResult;
+    budget = privateBudget;
+    logismos = privateGraph.logismos.public;
+  };
+  privateLimits = overrides: (privateBudget.merge overrides).value;
+  runPrivate =
+    judgment: limits: program:
+    privateComputation.run {
+      computation = program;
+      reader = { inherit judgment; };
+      state = privateBudget.initial // {
+        inherit limits;
+      };
+    };
+  privateResources = executed: kernelRepresentation.resources executed.state;
+  semanticClosure = sem.closure (sem.initialEnvironment 0) r.unit;
+  demandExact = runPrivate "demand" (privateLimits { demand = 1; }) (
+    privateSemantic.demand "demand" (privateLimits { demand = 1; }) 0 (sem.valueCell sem.unit)
+  );
+  demandOneOverAttempt = builtins.tryEval (
+    runPrivate "demand" (privateLimits { demand = 0; }) (
+      privateSemantic.demand "demand" (privateLimits { demand = 0; }) 0 (
+        builtins.throw "demand cell inspected"
+      )
+    )
+  );
+  demandOneOver = demandOneOverAttempt.value;
+  applicationExact = runPrivate "application" (privateLimits { application = 1; }) (
+    privateSemantic.apply "application" (privateLimits { application = 1; }) 0 semanticClosure (
+      sem.valueCell sem.unit
+    )
+  );
+  applicationOneOverAttempt = builtins.tryEval (
+    runPrivate "application" (privateLimits { application = 0; }) (
+      privateSemantic.apply "application" (privateLimits { application = 0; }) 0
+        (builtins.throw "application function inspected")
+        (builtins.throw "application argument inspected")
+    )
+  );
+  applicationOneOver = applicationOneOverAttempt.value;
+  projectionValue = sem.pair (sem.valueCell sem.unit) (sem.valueCell sem.unit);
+  projectionExact =
+    runPrivate "projection"
+      (privateLimits {
+        demand = 1;
+        projection = 1;
+      })
+      (
+        privateSemantic.project "projection" (privateLimits {
+          demand = 1;
+          projection = 1;
+        }) 0 "first" projectionValue
+      );
+  projectionOneOverAttempt = builtins.tryEval (
+    runPrivate "projection" (privateLimits { projection = 0; }) (
+      privateSemantic.project "projection" (privateLimits { projection = 0; }) 0 "first" (
+        builtins.throw "projection value inspected"
+      )
+    )
+  );
+  projectionOneOver = projectionOneOverAttempt.value;
+  applyManyArguments = [
+    (sem.valueCell sem.unit)
+    (sem.valueCell sem.unit)
+    (sem.valueCell sem.unit)
+  ];
+  applyManyExact = runPrivate "application" (privateLimits { application = 3; }) (
+    privateSemantic.applyMany "application" (privateLimits {
+      application = 3;
+    }) 0 semanticClosure applyManyArguments
+  );
+  mixedExactLimits = privateLimits {
+    application = 1;
+    demand = 1;
+    projection = 1;
+  };
+  mixedProgram =
+    limits:
+    privateComputation.bind (privateSemantic.project "mixed" limits 0 "first" projectionValue) (
+      projected: privateSemantic.apply "mixed" limits 0 semanticClosure (sem.valueCell projected)
+    );
+  mixedExact = runPrivate "mixed" mixedExactLimits (mixedProgram mixedExactLimits);
+  mixedDemandOneOverLimits = privateLimits {
+    application = 1;
+    demand = 0;
+    projection = 1;
+  };
+  mixedDemandOneOver = runPrivate "mixed" mixedDemandOneOverLimits (
+    mixedProgram mixedDemandOneOverLimits
+  );
+  mixedApplicationOneOverLimits = privateLimits {
+    application = 0;
+    demand = 1;
+    projection = 1;
+  };
+  mixedApplicationOneOver = runPrivate "mixed" mixedApplicationOneOverLimits (
+    mixedProgram mixedApplicationOneOverLimits
+  );
+  comparisonOneOverAttempt = builtins.tryEval (
+    kernel.convertTerms {
+      contextValue = emptyContext;
+      type = sem.unitType;
+      left = builtins.throw "comparison left inspected";
+      right = builtins.throw "comparison right inspected";
+      limits = {
+        comparison = 0;
+        conversion = 1;
+      };
+    }
+  );
+  unknownCostAttempt = builtins.tryEval (
+    runPrivate "budget" (privateLimits { }) (
+      privateBudget.protect "budget" (privateLimits { }) "unknownCost" 0 (
+        _charged: builtins.throw "unknown cost continuation opened"
+      )
+    )
+  );
+  negativeAmountAttempt = builtins.tryEval (
+    runPrivate "budget" (privateLimits { }) (
+      privateComputation.bind (privateBudget.chargeNamedAmount "budget" (privateLimits
+        { }
+      ) "demandCell" 0 (-1)) (_charged: builtins.throw "negative amount continuation opened")
+    )
+  );
+  completeNamedCosts = builtins.all (
+    value:
+    builtins.attrNames value == builtins.attrNames kernel.limits && privateBudget.algebra.valid value
+  ) (builtins.attrValues privateBudget.namedCosts);
+  fallbackConversion = kernel.check {
+    contextValue = emptyContext;
+    envelope = r.envelope 0 r.unitType [ ];
+    expected = sem.universe core.levels.zero;
+  };
+  typeConversionExact = kernel.convertTypes {
+    contextValue = emptyContext;
+    left = sem.unitType;
+    right = sem.unitType;
+  };
   goodResources = kernelRepresentation.resources { };
   trustedContext = kernelResult.checkedContext {
     context = emptyContext;
@@ -472,6 +631,19 @@ let
     type = sem.emptyType;
     inherit (emptyVariable) value;
   };
+  quoteNeutralOneOverAttempt = builtins.tryEval (
+    kernel.quote {
+      contextValue = emptyVariableContext;
+      type = sem.emptyType;
+      value = emptyVariable.value // {
+        head = builtins.throw "quote-neutral payload inspected";
+      };
+      limits = {
+        output = 1;
+        readback = 1;
+      };
+    }
+  );
   sumContextResult = checked [ (r.sumType r.unitType r.unitType) ];
   sumContext = sumContextResult.context;
   sumVariable = kernel.infer {
@@ -638,7 +810,6 @@ let
           peerValue = transitionHead;
           peerSpine = [ item ];
           peerSpineCount = 1;
-          budgetName = "comparison";
           malformed = transitionResult.internal "conversion" 1 transitionResult.codes.malformedSemantic;
           mismatch =
             transitionResult.failure "conversion" 1 transitionResult.codes.mismatch [ ] "convertible"
@@ -675,13 +846,13 @@ let
     type = sem.pi (sem.valueCell sem.unitType) applicationCodomain;
     item = applicationItem;
     expectedType = (applyClosure applicationCodomain [ sem.unit ]).value;
-    limits = (transitionBudget.merge { comparison = 2; }).value;
+    limits = (transitionBudget.merge { transition = 2; }).value;
   };
   transitionResourceOneOverCase = runTransition {
     type = sem.pi (sem.valueCell sem.unitType) applicationCodomain;
     item = applicationItem;
     expectedType = (applyClosure applicationCodomain [ sem.unit ]).value;
-    limits = (transitionBudget.merge { comparison = 1; }).value;
+    limits = (transitionBudget.merge { transition = 1; }).value;
   };
   sigmaCodomain = sem.closure (sem.initialEnvironment 0) (dependentIdentity r.unitType 0);
   firstProjectionItem = sem.spineItem { kind = "first-projection"; };
@@ -1086,6 +1257,129 @@ let
       inherit name expected actual;
       pass = actual == expected;
     };
+  completeVectorObservations = {
+    simpleInference = checkingExact.resources;
+    suppliedContext = contextExact.resources;
+    computedBinderContext = binderContextExact.resources;
+    publicTypeConversion = typeConversionExact.resources;
+    publicTermConversion = conversionExact.resources;
+    checkingFallbackConversion = fallbackConversion.resources;
+    dependentComparison = dependentPiConversion.resources;
+    demand = privateResources demandExact;
+    application = privateResources applicationExact;
+    projection = privateResources projectionExact;
+    applyMany = privateResources applyManyExact;
+    plainValueReadback = readbackExact.resources;
+    quoteNeutral = openNeutralReadback.resources;
+    normalizedLevelOutput = universeQuotationExact.resources;
+    typedReplay = typedNeutralReplayConversion.resources;
+    transition = privateResources transitionResourceExactCase.executed;
+    canonicalReadbackOracle = oracleSharedExact.resources;
+    mixedOperations = privateResources mixedExact;
+  };
+  completeVectorExpectations = {
+    simpleInference = resourceVector { checking = 1; };
+    suppliedContext = resourceVector {
+      checking = 1;
+      context = 1;
+      depth = 1;
+    };
+    computedBinderContext = resourceVector {
+      checking = 3;
+      context = 1;
+      depth = 1;
+    };
+    publicTypeConversion = resourceVector {
+      comparison = 1;
+      conversion = 1;
+    };
+    publicTermConversion = resourceVector {
+      comparison = 1;
+      conversion = 1;
+    };
+    checkingFallbackConversion = resourceVector {
+      checking = 2;
+      comparison = 1;
+      conversion = 1;
+    };
+    dependentComparison = resourceVector {
+      application = 3;
+      comparison = 3;
+      context = 1;
+      conversion = 1;
+      demand = 4;
+      depth = 1;
+    };
+    demand = resourceVector { demand = 1; };
+    application = resourceVector { application = 1; };
+    projection = resourceVector {
+      demand = 1;
+      projection = 1;
+    };
+    applyMany = resourceVector { application = 3; };
+    plainValueReadback = resourceVector {
+      output = 1;
+      readback = 1;
+    };
+    quoteNeutral = resourceVector {
+      depth = 1;
+      output = 1;
+      readback = 2;
+    };
+    normalizedLevelOutput = resourceVector {
+      output = 2;
+      readback = 1;
+    };
+    typedReplay = resourceVector {
+      application = 4;
+      comparison = 6;
+      context = 1;
+      conversion = 1;
+      demand = 2;
+      depth = 2;
+      transition = 2;
+    };
+    transition = resourceVector {
+      application = 1;
+      depth = 1;
+      transition = 2;
+    };
+    canonicalReadbackOracle = resourceVector {
+      output = 2;
+      readback = 2;
+    };
+    mixedOperations = resourceVector {
+      application = 1;
+      demand = 1;
+      projection = 1;
+    };
+  };
+  completeVectorCases = map (
+    name:
+    resourceFixture {
+      inherit name;
+      expected = completeVectorExpectations.${name};
+      actual = completeVectorObservations.${name};
+    }
+  ) (builtins.attrNames completeVectorExpectations);
+  completeVectorsExact =
+    builtins.attrNames completeVectorObservations == builtins.attrNames completeVectorExpectations
+    && builtins.all (case: case.pass) completeVectorCases;
+  privateRefusal =
+    budgetName: limit: consumed: execution:
+    execution.kind == "failure"
+    && execution.failure.kind == "resource-exhaustion"
+    && execution.failure.code == "AXIOM-KERNEL-001"
+    && execution.failure.budget == budgetName
+    && execution.failure.limit == limit
+    && execution.failure.consumed == consumed;
+  internalBudgetFailure =
+    attempted:
+    attempted.success
+    && attempted.value.kind == "failure"
+    && attempted.value.failure.kind == "internal-failure"
+    && attempted.value.failure.code == "AXIOM-KERNEL-008"
+    && privateResources attempted.value == resourceVector { };
   resourceEquivalenceMatrix = [
     (resourceFixture {
       name = "checking exact";
@@ -1300,7 +1594,67 @@ let
   resourceEquivalent =
     builtins.all (case: case.pass) resourceEquivalenceMatrix && hostileSpineRejected;
   evidence = {
-    privateGeneration = kernel.generation == "axiom-kernel-1";
+    privateGeneration = kernel.generation == "axiom-kernel-2";
+    resourceCompleteVectors = completeVectorsExact;
+    demandResourceExact =
+      demandExact.kind == "success" && privateResources demandExact == completeVectorExpectations.demand;
+    demandResourceOneOver =
+      demandOneOverAttempt.success
+      && privateRefusal "demand" 0 0 demandOneOver
+      && privateResources demandOneOver == resourceVector { };
+    applicationResourceExact =
+      applicationExact.kind == "success"
+      && privateResources applicationExact == completeVectorExpectations.application;
+    applicationResourceOneOver =
+      applicationOneOverAttempt.success
+      && privateRefusal "application" 0 0 applicationOneOver
+      && privateResources applicationOneOver == resourceVector { };
+    projectionResourceExact =
+      projectionExact.kind == "success"
+      && privateResources projectionExact == completeVectorExpectations.projection;
+    projectionResourceOneOver =
+      projectionOneOverAttempt.success
+      && privateRefusal "projection" 0 0 projectionOneOver
+      && privateResources projectionOneOver == resourceVector { };
+    applyManyResourceExact =
+      applyManyExact.kind == "success"
+      && builtins.length applyManyArguments == 3
+      && privateResources applyManyExact == completeVectorExpectations.applyMany;
+    quoteNeutralResourceExact =
+      openNeutralReadback.resources == completeVectorExpectations.quoteNeutral;
+    quoteNeutralResourceOneOver =
+      quoteNeutralOneOverAttempt.success
+      && !quoteNeutralOneOverAttempt.value.ok
+      && quoteNeutralOneOverAttempt.value.kind == "resource-exhaustion"
+      && quoteNeutralOneOverAttempt.value.code == "AXIOM-KERNEL-001"
+      && quoteNeutralOneOverAttempt.value.budget == "readback"
+      && quoteNeutralOneOverAttempt.value.limit == 1
+      && quoteNeutralOneOverAttempt.value.consumed == 1;
+    checkingFallbackConversionExact =
+      fallbackConversion.ok
+      && fallbackConversion.resources == completeVectorExpectations.checkingFallbackConversion;
+    comparisonResourceOneOver =
+      comparisonOneOverAttempt.success
+      && !comparisonOneOverAttempt.value.ok
+      && comparisonOneOverAttempt.value.kind == "resource-exhaustion"
+      && comparisonOneOverAttempt.value.code == "AXIOM-KERNEL-001"
+      && comparisonOneOverAttempt.value.budget == "comparison"
+      && comparisonOneOverAttempt.value.limit == 0
+      && comparisonOneOverAttempt.value.consumed == 0;
+    mixedResourceLimitsIndependent =
+      mixedExact.kind == "success"
+      && privateResources mixedExact == completeVectorExpectations.mixedOperations
+      && privateRefusal "demand" 0 0 mixedDemandOneOver
+      && privateResources mixedDemandOneOver == resourceVector { projection = 1; }
+      && privateRefusal "application" 0 0 mixedApplicationOneOver
+      &&
+        privateResources mixedApplicationOneOver == resourceVector {
+          demand = 1;
+          projection = 1;
+        };
+    namedCostsCompleteAndValid = completeNamedCosts;
+    unknownNamedCostFailsClosed = internalBudgetFailure unknownCostAttempt;
+    negativeNamedAmountFailsClosed = internalBudgetFailure negativeAmountAttempt;
     conversionHandlerKeysExact =
       conversionHandlerKeys.type == conversionHandlerKeys.producerType
       && conversionHandlerKeys.value == conversionHandlerKeys.producerValue
@@ -1364,12 +1718,14 @@ let
       && applicationArgumentRight.exact
       && applicationArgumentLeft.expected != applicationArgumentRight.expected;
     transitionPairedMetamorphic = pairedEqual.ok && !pairedChanged.ok;
-    transitionResourceExact = transitionResourceExactCase.exact;
+    transitionResourceExact =
+      transitionResourceExactCase.exact
+      && privateResources transitionResourceExactCase.executed == completeVectorExpectations.transition;
     transitionResourceOneOver =
       transitionResourceOneOverCase.executed.kind == "failure"
       && transitionResourceOneOverCase.executed.failure.kind == "resource-exhaustion"
       && transitionResourceOneOverCase.executed.failure.code == "AXIOM-KERNEL-001"
-      && transitionResourceOneOverCase.executed.failure.budget == "comparison"
+      && transitionResourceOneOverCase.executed.failure.budget == "transition"
       && transitionResourceOneOverCase.executed.failure.limit == 1
       && transitionResourceOneOverCase.executed.failure.consumed == 0;
     transitionLimitMetamorphic =
@@ -1428,7 +1784,12 @@ let
       && conversionExact.resources.conversion == 1
       && conversionExact.resources.comparison == 1;
     conversionResourceOneOver =
-      !conversionOneOver.ok && conversionOneOver.kind == "resource-exhaustion";
+      !conversionOneOver.ok
+      && conversionOneOver.kind == "resource-exhaustion"
+      && conversionOneOver.code == "AXIOM-KERNEL-001"
+      && conversionOneOver.budget == "conversion"
+      && conversionOneOver.limit == 0
+      && conversionOneOver.consumed == 0;
     readbackResourceExact =
       readbackExact.ok && readbackExact.resources.readback == 1 && readbackExact.resources.output == 1;
     readbackResourceOneOver = !readbackOneOver.ok && readbackOneOver.kind == "resource-exhaustion";
@@ -1485,6 +1846,61 @@ in
 {
   inherit evidence;
   debug = {
+    resourceObservations = {
+      demand = {
+        inherit (demandExact) kind;
+        resources = privateResources demandExact;
+      };
+      application = {
+        inherit (applicationExact) kind;
+        resources = privateResources applicationExact;
+      };
+      applicationOneOver = {
+        inherit (applicationOneOver) kind failure;
+        resources = privateResources applicationOneOver;
+      };
+      projection = {
+        inherit (projectionExact) kind;
+        resources = privateResources projectionExact;
+      };
+      projectionOneOver = {
+        inherit (projectionOneOver) kind failure;
+        resources = privateResources projectionOneOver;
+      };
+      applyMany = {
+        inherit (applyManyExact) kind;
+        resources = privateResources applyManyExact;
+      };
+      mixed = {
+        inherit (mixedExact) kind;
+        resources = privateResources mixedExact;
+      };
+      mixedDemandOneOver = {
+        inherit (mixedDemandOneOver) kind failure;
+        resources = privateResources mixedDemandOneOver;
+      };
+      mixedApplicationOneOver = {
+        inherit (mixedApplicationOneOver) kind failure;
+        resources = privateResources mixedApplicationOneOver;
+      };
+      comparisonOneOver = comparisonOneOverAttempt;
+      unknownCost = unknownCostAttempt;
+      negativeAmount = negativeAmountAttempt;
+      inherit completeNamedCosts;
+      simpleInference = checkingExact.resources;
+      suppliedContext = contextExact.resources;
+      binderContext = binderContextExact.resources;
+      typeConversion = typeConversionExact.resources;
+      termConversion = conversionExact.resources;
+      fallbackConversion = fallbackConversion.resources;
+      dependentComparison = dependentPiConversion.resources;
+      plainReadback = readbackExact.resources;
+      quoteNeutral = openNeutralReadback.resources;
+      normalizedOutput = universeQuotationExact.resources;
+      typedReplay = typedNeutralReplayConversion.resources;
+      oracle = oracleSharedExact.resources;
+      transition = privateResources transitionResourceExactCase.executed;
+    };
     readbacks = builtins.mapAttrs (_name: case: {
       contextOk = case.contextResult.ok;
       inferOk = case.inferred.ok;

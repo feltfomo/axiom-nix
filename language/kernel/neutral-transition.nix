@@ -424,7 +424,8 @@ let
     if !countChecked.success || !countChecked.value then
       computation.fail args.malformed
     else
-      computation.bind (budget.chargeAmount args.judgment args.limits args.budgetName args.ctx.depth
+      # the complete replay cost is reserved before any eliminator payload is opened
+      computation.bind (budget.chargeNamedAmount args.judgment args.limits "replayItem" args.ctx.depth
         totalCount
       ) (_spine: replayProgram);
 in

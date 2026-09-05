@@ -10,7 +10,9 @@ let
     "registry"
     "requirements"
     "schema"
+    "sets"
     "tagged"
+    "types"
     "validation"
   ];
   namesOf = axiom: builtins.attrNames axiom;

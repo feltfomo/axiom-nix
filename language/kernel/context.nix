@@ -55,7 +55,8 @@ let
             result.internal "context" level result.codes.impossibleState;
   extendComputed =
     judgment: limits: context: type:
-    computation.bind (budget.charge judgment limits "context" context.depth) (
+    # context usage belongs to trusted insertion rather than work performed under the context
+    budget.protect judgment limits "insertContextEntry" context.depth (
       _charged:
       let
         extended = extend context type;

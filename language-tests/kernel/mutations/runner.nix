@@ -53,7 +53,6 @@ let
             inherit (initial) peerValue;
             peerSpine = spine;
             peerSpineCount = spineCount;
-            budgetName = "comparison";
             malformed = result.internal "conversion" 1 result.codes.malformedSemantic;
             mismatch = result.failure "conversion" 1 result.codes.mismatch [ ] "convertible" "distinct";
             observe = _descriptor: observer: computation.pure observer;
@@ -230,10 +229,42 @@ let
         };
       };
     in
+    summarize result;
+  demandObservation =
+    graph:
+    let
+      sem = graph.evaluation.public.representation;
+      type = sem.sumType (sem.valueCell sem.unitType) (sem.valueCell sem.unitType);
+      result = graph.kernel.public.convertTypes {
+        contextValue = (contextOf graph [ ]).context;
+        left = type;
+        right = type;
+      };
+    in
+    summarize result;
+  demandOrderObservation =
+    graph:
+    let
+      sem = graph.evaluation.public.representation;
+      poison = {
+        inherit (sem) generation;
+        kind = builtins.throw "demand payload inspected";
+      };
+      type = sem.sumType poison (sem.valueCell sem.unitType);
+      attempted = builtins.tryEval (
+        graph.kernel.public.convertTypes {
+          contextValue = (contextOf graph [ ]).context;
+          left = type;
+          right = type;
+          limits = {
+            demand = 0;
+          };
+        }
+      );
+    in
     {
-      inherit (result) ok;
-      conversion = result.resources.conversion or null;
-      comparison = result.resources.comparison or null;
+      evaluated = attempted.success;
+      result = if attempted.success then summarize attempted.value else null;
     };
   dependentSigmaObservation =
     graph:
@@ -292,8 +323,56 @@ let
         observation:
         observation == {
           ok = true;
-          conversion = 1;
-          comparison = 1;
+          resources = {
+            application = 0;
+            checking = 0;
+            comparison = 1;
+            context = 0;
+            conversion = 1;
+            demand = 0;
+            depth = 1;
+            output = 0;
+            projection = 0;
+            readback = 0;
+            transition = 0;
+          };
+        };
+    };
+    "language.kernel.test demandVectorExact" = {
+      observe = demandObservation;
+      predicate =
+        observation:
+        observation == {
+          ok = true;
+          resources = {
+            application = 0;
+            checking = 0;
+            comparison = 3;
+            context = 0;
+            conversion = 1;
+            demand = 4;
+            depth = 0;
+            output = 0;
+            projection = 0;
+            readback = 0;
+            transition = 0;
+          };
+        };
+    };
+    "language.kernel.test demandChargeBeforeInspection" = {
+      observe = demandOrderObservation;
+      predicate =
+        observation:
+        observation == {
+          evaluated = true;
+          result = {
+            ok = false;
+            kind = "resource-exhaustion";
+            code = "AXIOM-KERNEL-001";
+            budget = "demand";
+            limit = 0;
+            consumed = 0;
+          };
         };
     };
     "language.kernel.test dependentSigmaCodomainWitness" = {
@@ -345,6 +424,8 @@ let
   };
   probes = {
     "kernel-budget-comparison-charge-canary" = chargeObservation;
+    "kernel-budget-demand-charge-canary" = demandObservation;
+    "kernel-budget-demand-order-canary" = demandOrderObservation;
     "kernel-conversion-dependent-sigma-witness-canary" = dependentSigmaObservation;
     "kernel-conversion-extensional-pi-resource-canary" = extensionalPiObservation;
     "kernel-conversion-identity-pointwise-canary" = identityPointwiseObservation;
@@ -491,6 +572,8 @@ in
     mutationRegistryExact =
       map (entry: entry.name) registry.entries == [
         "kernel-budget-skip-comparison-charge"
+        "kernel-budget-skip-demand-charge"
+        "kernel-budget-late-demand-charge"
         "logismos-relation-dependent-witness"
         "logismos-relation-extensional-witness"
         "logismos-relation-pointwise-completeness"

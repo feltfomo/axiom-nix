@@ -1,16 +1,20 @@
 { evaluation }:
 let
   attrs = import ../internal/attrs.nix;
-  generation = "axiom-kernel-1";
+  generation = "axiom-kernel-2";
   evaluationGeneration = evaluation.representation.generation;
   limits = {
+    application = 4096;
     checking = 4096;
-    conversion = 4096;
     comparison = 4096;
-    readback = 4096;
     context = 256;
-    output = 256;
+    conversion = 4096;
+    demand = 4096;
     depth = 64;
+    output = 256;
+    projection = 4096;
+    readback = 4096;
+    transition = 4096;
   };
   exact =
     names: value:
@@ -262,7 +266,7 @@ let
             spine = builtins.tryEval (
               neutral.ok
               && builtins.length value.spine == value.spineCount
-              && value.spineCount <= limits.readback
+              && value.spineCount <= limits.transition
               && builtins.all (item: (spineItemShape item).ok) value.spine
             );
           in
@@ -324,24 +328,32 @@ let
     entryCount = depth;
   };
   resources = values: {
+    application = values.application or 0;
     checking = values.checking or 0;
-    conversion = values.conversion or 0;
     comparison = values.comparison or 0;
-    readback = values.readback or 0;
     context = values.context or 0;
-    output = values.output or 0;
+    conversion = values.conversion or 0;
+    demand = values.demand or 0;
     depth = values.depth or 0;
+    output = values.output or 0;
+    projection = values.projection or 0;
+    readback = values.readback or 0;
+    transition = values.transition or 0;
   };
   validResources =
     value:
     exact [
+      "application"
       "checking"
       "comparison"
       "context"
       "conversion"
+      "demand"
       "depth"
       "output"
+      "projection"
       "readback"
+      "transition"
     ] value
     && builtins.all (name: builtins.isInt value.${name} && value.${name} >= 0) (
       builtins.attrNames value

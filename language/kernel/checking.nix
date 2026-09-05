@@ -26,9 +26,10 @@ let
   semanticFailureProgram =
     judgment: ctx: checked:
     computation.fail (semanticFailure judgment ctx checked);
+  # rule entry does not absorb semantic work or a conversion premise
   chargeProgram =
-    judgment: limits: ctx:
-    budget.charge judgment limits "checking" ctx.depth;
+    judgment: limits: ctx: costName: protected:
+    budget.protect judgment limits costName ctx.depth protected;
   evalTermProgram = ctx: term: semantic.evalRoot "evaluation" ctx.environment term;
   formProgram =
     limits: ctx: term:
@@ -50,7 +51,7 @@ let
     );
   inferProgram =
     limits: ctx: term:
-    computation.bind (chargeProgram "inference" limits ctx) (
+    chargeProgram "inference" limits ctx "inferTerm" (
       _paid:
       if term.kind == "variable" then
         let
@@ -387,7 +388,7 @@ let
     );
   checkProgram =
     limits: ctx: term: expected:
-    computation.bind (chargeProgram "checking" limits ctx) (
+    chargeProgram "checking" limits ctx "checkTerm" (
       _paid:
       let
         checkedExpected = representation.semanticShape expected;
@@ -446,7 +447,7 @@ let
         )
       else
         computation.bind (inferProgram limits ctx term) (
-          inferred: conversion.compareTypeProgram limits ctx inferred.type expected
+          inferred: conversion.convertTypeProgram limits ctx inferred.type expected
         )
     );
   materializeProgram =
@@ -486,7 +487,7 @@ let
         current: envelope:
         computation.bind current (
           ctx:
-          computation.bind (budget.charge "context" limits "context" ctx.depth) (
+          budget.protect "context" limits "insertContextEntry" ctx.depth (
             _context:
             let
               admitted = admitRoot ctx envelope;

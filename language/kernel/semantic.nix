@@ -55,7 +55,8 @@ let
       computation.pure evaluated.value;
   demand =
     judgment: limits: depth: cell:
-    computation.bind (budget.charge judgment limits "readback" depth) (
+    # a cell demand keeps its owner when checking, conversion, or quotation needs the value
+    budget.protect judgment limits "demandCell" depth (
       _charged:
       let
         cellChecked = representation.cellShape cell;
@@ -82,7 +83,7 @@ let
     );
   apply =
     judgment: limits: depth: function: argument:
-    computation.bind (budget.charge judgment limits "readback" depth) (
+    budget.protect judgment limits "applyArgument" depth (
       _charged:
       let
         functionChecked = representation.semanticShape function;
@@ -123,7 +124,8 @@ let
     );
   project =
     judgment: limits: depth: direction: value:
-    computation.bind (budget.charge judgment limits "readback" depth) (
+    # projection is charged separately from demanding the selected pair cell
+    budget.protect judgment limits "projectValue" depth (
       _charged:
       let
         checked = representation.semanticShape value;
@@ -153,7 +155,8 @@ let
         program: argument:
         computation.bind program (
           environment:
-          computation.bind (budget.charge judgment limits "readback" depth) (
+          # each argument is charged before its cell is inspected or added to the closure environment
+          budget.protect judgment limits "applyArgument" depth (
             _charged:
             let
               cell = representation.cellShape argument;

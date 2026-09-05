@@ -6,13 +6,17 @@
 let
   inherit (logismos) computation;
   dimensions = [
+    "application"
     "checking"
     "comparison"
     "context"
     "conversion"
+    "demand"
     "depth"
     "output"
+    "projection"
     "readback"
+    "transition"
   ];
   zeroCost = builtins.listToAttrs (
     map (name: {
@@ -20,24 +24,29 @@ let
       value = 0;
     }) dimensions
   );
-  cost = name: amount: zeroCost // { ${name} = amount; };
+  cost = dimension: zeroCost // { ${dimension} = 1; };
+  costDimensions = {
+    applyArgument = "application";
+    checkTerm = "checking";
+    compareNeutral = "comparison";
+    compareTerm = "comparison";
+    compareType = "comparison";
+    demandCell = "demand";
+    emitSyntaxNode = "output";
+    enterTermConversion = "conversion";
+    enterTypeConversion = "conversion";
+    inferTerm = "checking";
+    insertContextEntry = "context";
+    projectValue = "projection";
+    quoteNeutral = "readback";
+    quoteType = "readback";
+    quoteValue = "readback";
+    replayItem = "transition";
+  };
+  # complete vectors keep callers from assigning an operation to a convenient bucket
+  namedCosts = builtins.mapAttrs (_name: cost) costDimensions;
   algebra = logismos.budget.make {
-    inherit dimensions;
-    namedCosts = builtins.listToAttrs (
-      map
-        (name: {
-          inherit name;
-          value = cost name 1;
-        })
-        [
-          "checking"
-          "comparison"
-          "context"
-          "conversion"
-          "output"
-          "readback"
-        ]
-    );
+    inherit dimensions namedCosts;
   };
   names = builtins.attrNames representation.limits;
   initial = algebra.zero // {
@@ -77,21 +86,37 @@ let
       }
     else
       result.internal judgment depth result.codes.malformedLimits;
-  chargeAmount =
-    judgment: limits: name: depth: amount:
+  scale =
+    amount: vector:
+    builtins.listToAttrs (
+      map (name: {
+        inherit name;
+        value = vector.${name} * amount;
+      }) dimensions
+    );
+  chargeNamedAmount =
+    judgment: limits: costName: depth: amount:
     computation.bind computation.get (
       state:
-      if !builtins.isInt amount || amount < 0 then
+      if !builtins.isString costName || !(builtins.hasAttr costName namedCosts) then
+        computation.fail (result.internal judgment depth result.codes.impossibleState)
+      else if !builtins.isInt amount || amount < 0 then
         computation.fail (result.internal judgment depth result.codes.impossibleState)
       else if depth > limits.depth then
         computation.fail (result.resource judgment depth "depth" limits.depth depth)
       else
+        let
+          dimension = costDimensions.${costName};
+          # scaling records repeated instances of one operation without opening the protected work
+          scaled = scale amount namedCosts.${costName};
+        in
         computation.bind
           (algebra.charge {
             limit = limit limits;
             usage = usage state;
-            cost = cost name amount;
-            refusal = result.resource judgment depth name limits.${name} state.${name};
+            cost = scaled;
+            # refusal reports the state before the operation because none of its protected work ran
+            refusal = result.resource judgment depth dimension limits.${dimension} state.${dimension};
           })
           (
             charged:
@@ -106,16 +131,22 @@ let
             )) (_unit: computation.pure null)
           )
     );
+  chargeNamed =
+    judgment: limits: costName: depth:
+    chargeNamedAmount judgment limits costName depth 1;
+  protect =
+    judgment: limits: costName: depth: protected:
+    computation.bind (chargeNamed judgment limits costName depth) protected;
 in
 {
   inherit
     algebra
+    namedCosts
     initial
     resolve
-    chargeAmount
+    chargeNamed
+    chargeNamedAmount
+    protect
     ;
   merge = supplied: resolve "resources" 0 supplied;
-  charge =
-    judgment: limits: name: depth:
-    chargeAmount judgment limits name depth 1;
 }

@@ -7,13 +7,64 @@ let
       injectedChange = "comparison charges return without changing budget state";
       expectedObservation = {
         ok = true;
-        conversion = 1;
-        comparison = 0;
+        resources = {
+          application = 0;
+          checking = 0;
+          comparison = 0;
+          context = 0;
+          conversion = 1;
+          demand = 0;
+          depth = 1;
+          output = 0;
+          projection = 0;
+          readback = 0;
+          transition = 0;
+        };
       };
       killingTest = "language.kernel.test conversionResourceExact";
       installationProbe = "kernel-budget-comparison-charge-canary";
       seam = "budget";
       factory = import ./skip-comparison-charge.nix;
+    }
+    {
+      name = "kernel-budget-skip-demand-charge";
+      owner = "language/kernel/budget.nix";
+      violatedLaw = "every semantic-cell demand consumes one demand unit";
+      injectedChange = "demand executes without changing budget state";
+      expectedObservation = {
+        ok = true;
+        resources = {
+          application = 0;
+          checking = 0;
+          comparison = 3;
+          context = 0;
+          conversion = 1;
+          demand = 0;
+          depth = 0;
+          output = 0;
+          projection = 0;
+          readback = 0;
+          transition = 0;
+        };
+      };
+      killingTest = "language.kernel.test demandVectorExact";
+      installationProbe = "kernel-budget-demand-charge-canary";
+      seam = "budget";
+      factory = import ./skip-demand-charge.nix;
+    }
+    {
+      name = "kernel-budget-late-demand-charge";
+      owner = "language/kernel/budget.nix";
+      violatedLaw = "demand refuses before inspecting its semantic cell";
+      injectedChange = "demand opens the protected computation before charging";
+      expectedObservation = {
+        evaluated = false;
+        result = null;
+      };
+      killingTest = "language.kernel.test demandChargeBeforeInspection";
+      installationProbe = "kernel-budget-demand-order-canary";
+      seam = "budget";
+      factory = import ./late-demand-charge.nix;
     }
     {
       name = "logismos-relation-dependent-witness";
@@ -59,13 +110,17 @@ let
       expectedObservation = {
         ok = true;
         resources = {
+          application = 0;
           checking = 0;
           comparison = 4;
           context = 0;
-          conversion = 4;
+          conversion = 1;
+          demand = 4;
           depth = 0;
           output = 0;
-          readback = 4;
+          projection = 0;
+          readback = 0;
+          transition = 0;
         };
       };
       killingTest = "language.kernel.test identityPointwiseTargetComplete";

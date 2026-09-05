@@ -1,5 +1,6 @@
 let
-  exact = names: value: builtins.isAttrs value && builtins.attrNames value == names;
+  attrs = import ../internal/attrs.nix;
+  inherit (attrs) exact;
   validPath = path: builtins.isList path && builtins.all builtins.isString path;
   validCategory = category: category == null || builtins.isString category;
 

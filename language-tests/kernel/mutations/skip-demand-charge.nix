@@ -1,5 +1,5 @@
 {
-  identity = "kernel-budget-skip-comparison-charge";
+  identity = "kernel-budget-skip-demand-charge";
   build =
     args:
     let
@@ -9,13 +9,7 @@
     // {
       protect =
         judgment: limits: costName: depth: protected:
-        if
-          builtins.elem costName [
-            "compareNeutral"
-            "compareTerm"
-            "compareType"
-          ]
-        then
+        if costName == "demandCell" then
           protected null
         else
           production.protect judgment limits costName depth protected;
